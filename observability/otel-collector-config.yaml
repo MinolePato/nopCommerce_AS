@@ -1,0 +1,58 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+  # Drop any attribute that contains PII before it leaves the collector.
+  # This is a second line of defence; the primary sanitisation is done
+  # in the OTel SDK processor inside nopCommerce itself (PiiSanitizingProcessor).
+  attributes/drop_pii:
+    actions:
+      - key: customer.email
+        action: delete
+      - key: customer.username
+        action: delete
+      - key: billing.name
+        action: delete
+      - key: billing.address
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: http.request.header.authorization
+        action: delete
+
+exporters:
+  # Traces → Jaeger
+  jaeger:
+    endpoint: jaeger:14250
+    tls:
+      insecure: true
+
+  # Metrics → Prometheus (pull)
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: nop
+
+  # Debug logging (remove in production)
+  debug:
+    verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, attributes/drop_pii]
+      exporters: [jaeger, debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus, debug]

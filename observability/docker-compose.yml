@@ -1,0 +1,68 @@
+version: "3.8"
+
+# Observability stack for nopCommerce order-flow instrumentation.
+# Services: OTel Collector → Jaeger (traces) + Prometheus (metrics) + Grafana (dashboards)
+#
+# Usage:
+#   docker compose -f observability/docker-compose.yml up -d
+#
+# Then run nopCommerce with:
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 dotnet run --project src/Presentation/Nop.Web
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    container_name: nop_otel_collector
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver (nopCommerce sends here)
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8888:8888"   # Collector self-metrics
+    depends_on:
+      - jaeger
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: nop_jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "14250:14250"   # Jaeger gRPC (collector → jaeger)
+    volumes:
+      - jaeger_data:/tmp
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: nop_prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+
+  grafana:
+    image: grafana/grafana:10.4.3
+    container_name: nop_grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - jaeger
+
+volumes:
+  jaeger_data:
+  prometheus_data:
+  grafana_data:

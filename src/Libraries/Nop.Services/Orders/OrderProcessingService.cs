@@ -1,4 +1,5 @@
-﻿using System.Globalization;
+﻿using System.Diagnostics;
+using System.Globalization;
 using Newtonsoft.Json;
 using Nop.Core;
 using Nop.Core.Caching;
@@ -1571,6 +1572,14 @@ public partial class OrderProcessingService : IOrderProcessingService
         if (processPaymentRequest.OrderGuid == Guid.Empty)
             throw new Exception("Order GUID is not generated");
 
+        // Start a custom span for the entire order-placement operation.
+        // This span is a child of the ASP.NET Core HTTP span, so it appears
+        // nested inside the checkout request in Jaeger/Tempo.
+        // Only safe, non-PII attributes are attached (no customer email/name).
+        using var activity = NopTelemetry.OrderSource.StartActivity("order.place");
+        activity?.SetTag("order.store_id", processPaymentRequest.StoreId);
+        activity?.SetTag("order.guid", processPaymentRequest.OrderGuid);
+
         //prepare order details
         var details = await PreparePlaceOrderDetailsAsync(processPaymentRequest);
 
@@ -1650,7 +1659,14 @@ public partial class OrderProcessingService : IOrderProcessingService
         }
 
         if (!_orderSettings.PlaceOrderWithLock)
-            return await placeOrder(details);
+        {
+            var r = await placeOrder(details);
+            activity?.SetTag("order.id", r.PlacedOrder?.Id);
+            activity?.SetTag("order.success", r.Success);
+            if (!r.Success)
+                activity?.SetStatus(ActivityStatusCode.Error, string.Join("; ", r.Errors));
+            return r;
+        }
 
         PlaceOrderResult result;
         var resource = details.Customer.Id.ToString();
@@ -1687,6 +1703,11 @@ public partial class OrderProcessingService : IOrderProcessingService
         {
             mutex.ReleaseMutex();
         }
+
+        activity?.SetTag("order.id", result.PlacedOrder?.Id);
+        activity?.SetTag("order.success", result.Success);
+        if (!result.Success)
+            activity?.SetStatus(ActivityStatusCode.Error, string.Join("; ", result.Errors));
 
         return result;
     }
