@@ -1,0 +1,227 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "datasource", "id": "jaeger",     "name": "Jaeger",     "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "description": "nopCommerce — Order Placement Flow. Tracks order throughput, item-count distribution, checkout duration, and HTTP error rate. Jaeger panel links directly to traces for a selected request.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+
+    {
+      "id": 1,
+      "title": "Orders placed / min",
+      "description": "Rate of successfully placed orders. A drop to 0 during business hours means checkout is broken — actionable before users start reporting errors.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
+      "targets": [
+        {
+          "expr": "sum(rate(nop_nop_orders_placed_total[1m])) by (payment_method)",
+          "legendFormat": "{{payment_method}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 2,
+      "title": "HTTP 5xx error rate — checkout flow",
+      "description": "Fraction of checkout HTTP requests returning 5xx. If this rises, something in the order pipeline is throwing unhandled exceptions.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "red", "mode": "fixed" },
+          "unit": "percentunit",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.01 },
+              { "color": "red",    "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_request_duration_seconds_count{http_route=~\"/checkout.*\",http_response_status_code=~\"5..\"}[1m])) / sum(rate(http_server_request_duration_seconds_count{http_route=~\"/checkout.*\"}[1m]))",
+          "legendFormat": "5xx rate",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 3,
+      "title": "order.place span — p50 / p95 / p99 latency",
+      "description": "Duration of the custom order.place span inside OrderProcessingService.PlaceOrderAsync. A rising p95 signals the checkout pipeline is degrading (slow payment gateway, DB pressure) before users see timeouts.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{span_name=\"order.place\"}[5m])) by (le)) / 1000",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{span_name=\"order.place\"}[5m])) by (le)) / 1000",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{span_name=\"order.place\"}[5m])) by (le)) / 1000",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+
+    {
+      "id": 4,
+      "title": "Items per order — distribution",
+      "description": "Histogram of line-item counts per order. A sudden shift toward high values (e.g. mean jumps from 2 to 50) at off-peak hours signals bot activity or a misconfigured bulk-import hitting checkout.",
+      "type": "histogram",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": { "bucketSize": "auto", "fillOpacity": 80 },
+      "targets": [
+        {
+          "expr": "sum(rate(nop_nop_order_item_count_bucket[5m])) by (le)",
+          "legendFormat": "{{le}}",
+          "refId": "A",
+          "format": "heatmap"
+        }
+      ]
+    },
+
+    {
+      "id": 5,
+      "title": "Active checkout requests",
+      "description": "Number of in-flight HTTP requests to the /checkout routes right now.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "red",    "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "expr": "sum(http_server_active_requests{http_route=~\"/checkout.*\"})",
+          "legendFormat": "active",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 6,
+      "title": "Total orders placed (window)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["sum"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "expr": "increase(nop_nop_orders_placed_total[$__range])",
+          "legendFormat": "orders",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 7,
+      "title": "Traces — search order.place spans",
+      "description": "Use this panel to jump into individual traces for failed or slow order placements.",
+      "type": "traces",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 20 },
+      "datasource": { "uid": "jaeger", "type": "jaeger" },
+      "options": {
+        "query": { "query": "{ .span.name = \"order.place\" }" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "search",
+          "service": "nopCommerce",
+          "operation": "order.place"
+        }
+      ]
+    }
+
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["nopcommerce", "orders", "opentelemetry"],
+  "templating": {
+    "list": [
+      {
+        "name": "payment_method",
+        "type": "query",
+        "datasource": { "uid": "prometheus", "type": "prometheus" },
+        "definition": "label_values(nop_nop_orders_placed_total, payment_method)",
+        "query": "label_values(nop_nop_orders_placed_total, payment_method)",
+        "label": "Payment method",
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {},
+        "options": [],
+        "refresh": 2
+      }
+    ]
+  },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "nopCommerce — Order Flow",
+  "uid": "nop-order-flow",
+  "version": 1
+}
