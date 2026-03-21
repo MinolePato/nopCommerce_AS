@@ -1,6 +1,108 @@
 ﻿﻿nopCommerce: free and open-source eCommerce solution
 ===========
 
+---
+
+## Observability Assignment — Order Flow Instrumentation
+
+This fork adds OpenTelemetry tracing and metrics to the **"Customer places an order"** flow
+(Basket → OrderProcessingService → Payment → Inventory) as part of Assignment 01.
+
+### Architecture diagram — instrumented flow
+
+```
+Browser
+  │  HTTP POST /checkout/OpcConfirmOrder
+  ▼
+[ASP.NET Core] ──(auto span: HTTP)──────────────────────────────────┐
+  │                                                                  │
+  ▼                                                                  │
+CheckoutController.OpcConfirmOrderAsync                             │
+  │                                                                  │
+  ▼                                                                  │
+IOrderProcessingService.PlaceOrderAsync                             │
+  │  ◄── custom span: "order.place"  (NopTelemetry.OrderSource) ──► │
+  │                                                                  │
+  ├─► GetProcessPaymentResultAsync                                   │
+  │     └─ IPaymentService (plugin call)                            │
+  │                                                                  │
+  ├─► SaveOrderDetailsAsync                                          │
+  │     └─ IRepository<Order>.InsertAsync ──(auto span: SQL)────────┤
+  │                                                                  │
+  ├─► MoveShoppingCartItemsToOrderItemsAsync                         │
+  │     └─ IRepository<OrderItem>.InsertAsync ──(auto span: SQL)────┤
+  │                                                                  │
+  └─► IEventPublisher.PublishAsync(OrderPlacedEvent)                │
+        └─ OrderTelemetryConsumer                                   │
+             ├─ nop.orders.placed  (Counter, tags: payment_method)  │
+             └─ nop.order.item_count  (Histogram)                   │
+                                                                     │
+All spans exported via OTLP ──► OTel Collector ──► Jaeger ◄── Grafana
+                                                └──► Prometheus ◄── Grafana
+```
+
+### Quick start
+
+**1. Start the observability stack**
+
+```bash
+docker compose -f observability/docker-compose.yml up -d
+```
+
+| Service    | URL                      |
+|------------|--------------------------|
+| Grafana    | http://localhost:3000  (admin/admin) |
+| Jaeger UI  | http://localhost:16686   |
+| Prometheus | http://localhost:9090    |
+
+**2. Run nopCommerce**
+
+```bash
+# Requires .NET 9 SDK and a running MySQL/Postgres/MSSQL instance.
+# See mysql-docker-compose.yml for a ready-made MySQL setup.
+
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+dotnet run --project src/Presentation/Nop.Web --configuration Release
+```
+
+**3. View the dashboard**
+
+Open Grafana → Dashboards → **nopCommerce — Order Flow**.
+The dashboard auto-provisions on first start via `observability/grafana/dashboards/`.
+
+**4. Run the load test**
+
+```bash
+# Install k6: https://grafana.com/docs/k6/latest/set-up/install-k6/
+k6 run load-test/order-flow.js
+
+# Target a different host or increase VUs:
+k6 run -e BASE_URL=http://localhost:5000 --vus 20 --duration 2m load-test/order-flow.js
+```
+
+### Key files added
+
+| File | Purpose |
+|------|---------|
+| `src/Libraries/Nop.Services/Orders/NopTelemetry.cs` | `ActivitySource` and metric instrument definitions |
+| `src/Libraries/Nop.Services/Orders/OrderTelemetryConsumer.cs` | `IConsumer<OrderPlacedEvent>` — records metrics non-invasively |
+| `src/Presentation/Nop.Web/Infrastructure/OpenTelemetryExtensions.cs` | OTel SDK registration + `PiiSanitizingProcessor` |
+| `observability/` | Docker Compose stack, OTel Collector config, Grafana provisioning |
+| `load-test/order-flow.js` | k6 script driving the full checkout flow |
+| `CRITIQUE.md` | Architectural critique |
+| `ARCHITECTURE.md` | Pre-instrumentation architectural analysis |
+
+### Sensitive data
+
+A `PiiSanitizingProcessor` (registered in `OpenTelemetryExtensions`) removes customer
+email, billing address, cookie, and authorization headers from all spans before they leave
+the process.  The OTel Collector config applies a second filter as a defence-in-depth
+measure.  Only operationally safe tags appear in Jaeger: `order.id`, `order.store_id`,
+`order.success`, and `payment_method` (plugin key, not card data).
+
+---
+
+
 [nopCommerce](https://www.nopcommerce.com/?utm_source=github&utm_medium=content&utm_campaign=homepage) is the best open-source eCommerce platform. nopCommerce is free, and it is the most popular ASP.NET Core shopping cart.
 
 ![nopCommerce demo](https://www.nopcommerce.com/images/github/responsive_devices_codeplex.png#v1)

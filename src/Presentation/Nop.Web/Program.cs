@@ -2,6 +2,7 @@
 using Nop.Core.Configuration;
 using Nop.Core.Infrastructure;
 using Nop.Web.Framework.Infrastructure.Extensions;
+using Nop.Web.Infrastructure;
 
 namespace Nop.Web;
 
@@ -37,6 +38,9 @@ public partial class Program
                 options.ValidateOnBuild = true;
             });
         }
+
+        //add OpenTelemetry tracing and metrics (order-flow instrumentation)
+        builder.Services.AddNopOpenTelemetry(builder.Configuration);
 
         //add services to the application and configure service provider
         builder.Services.ConfigureApplicationServices(builder);
