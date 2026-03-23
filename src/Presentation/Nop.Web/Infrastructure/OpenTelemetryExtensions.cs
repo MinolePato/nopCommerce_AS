@@ -7,22 +7,9 @@ using OpenTelemetry.Metrics;
 
 namespace Nop.Web.Infrastructure;
 
-/// <summary>
-/// Registers OpenTelemetry tracing and metrics with the ASP.NET Core DI container.
-///
-/// Kept in Nop.Web (not Nop.Web.Framework) so that OTel NuGet packages remain
-/// a presentation-layer concern and do not bleed into shared libraries.
-/// </summary>
+
 public static class OpenTelemetryExtensions
 {
-    /// <summary>
-    /// Adds OpenTelemetry tracing and metrics.
-    ///
-    /// The OTLP endpoint is read from the environment variable
-    /// <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> (default: http://localhost:4317).
-    /// When the variable is absent, telemetry is exported to the console so
-    /// the application still starts cleanly in development without a collector.
-    /// </summary>
     public static IServiceCollection AddNopOpenTelemetry(
         this IServiceCollection services,
         IConfiguration configuration)
@@ -53,14 +40,7 @@ public static class OpenTelemetryExtensions
                         !ctx.Request.Path.StartsWithSegments("/favicon");
                 })
                 .AddHttpClientInstrumentation()
-                // Database spans (linq2db uses SqlClient under the hood)
-                .AddSqlClientInstrumentation(opts =>
-                {
-                    opts.SetDbStatementForText = true;
-                    // Never capture bind parameters — they may contain PII
-                    opts.SetDbStatementForStoredProcedure = false;
-                })
-                // Custom order-flow spans from NopTelemetry.OrderSource
+                .AddSqlClientInstrumentation()
                 .AddSource(NopTelemetry.OrderSource.Name)
                 // Drop span attributes that contain PII before export
                 .AddProcessor(new PiiSanitizingProcessor())
@@ -100,7 +80,7 @@ internal sealed class PiiSanitizingProcessor : BaseProcessor<Activity>
         "http.request.header.cookie",
         "http.request.header.authorization",
         "http.response.header.set-cookie",
-        "db.statement",   // remove raw SQL — may contain literal values
+        "db.statement",   
     };
 
     public override void OnEnd(Activity activity)

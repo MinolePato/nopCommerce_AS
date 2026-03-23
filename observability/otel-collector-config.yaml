@@ -30,9 +30,9 @@ processors:
         action: delete
 
 exporters:
-  # Traces → Jaeger
-  jaeger:
-    endpoint: jaeger:14250
+  # Traces → Jaeger via OTLP (jaeger exporter was removed in collector v0.86+)
+  otlp/jaeger:
+    endpoint: jaeger:4317
     tls:
       insecure: true
 
@@ -50,7 +50,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch, attributes/drop_pii]
-      exporters: [jaeger, debug]
+      exporters: [otlp/jaeger, debug]
 
     metrics:
       receivers: [otlp]

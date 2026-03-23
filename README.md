@@ -3,89 +3,91 @@
 
 ---
 
-## Observability Assignment — Order Flow Instrumentation
+## Observability Assignment — Search & Product View Flow Instrumentation
 
-This fork adds OpenTelemetry tracing and metrics to the **"Customer places an order"** flow
-(Basket → OrderProcessingService → Payment → Inventory) as part of Assignment 01.
+This fork adds OpenTelemetry tracing and metrics to the **"Customer searches and views a product"** flow
+(Catalogue · Search · Pricing) as part of Assignment 01.
 
 ### Architecture diagram — instrumented flow
 
 ```
 Browser
-  │  HTTP POST /checkout/OpcConfirmOrder
+  │  GET /search?q=…  (or POST /search)
   ▼
-[ASP.NET Core] ──(auto span: HTTP)──────────────────────────────────┐
-  │                                                                  │
-  ▼                                                                  │
-CheckoutController.OpcConfirmOrderAsync                             │
-  │                                                                  │
-  ▼                                                                  │
-IOrderProcessingService.PlaceOrderAsync                             │
-  │  ◄── custom span: "order.place"  (NopTelemetry.OrderSource) ──► │
-  │                                                                  │
-  ├─► GetProcessPaymentResultAsync                                   │
-  │     └─ IPaymentService (plugin call)                            │
-  │                                                                  │
-  ├─► SaveOrderDetailsAsync                                          │
-  │     └─ IRepository<Order>.InsertAsync ──(auto span: SQL)────────┤
-  │                                                                  │
-  ├─► MoveShoppingCartItemsToOrderItemsAsync                         │
-  │     └─ IRepository<OrderItem>.InsertAsync ──(auto span: SQL)────┤
-  │                                                                  │
-  └─► IEventPublisher.PublishAsync(OrderPlacedEvent)                │
-        └─ OrderTelemetryConsumer                                   │
-             ├─ nop.orders.placed  (Counter, tags: payment_method)  │
-             └─ nop.order.item_count  (Histogram)                   │
-                                                                     │
-All spans exported via OTLP ──► OTel Collector ──► Jaeger ◄── Grafana
-                                                └──► Prometheus ◄── Grafana
+[ASP.NET Core] ──(auto span: HTTP)────────────────────────────────────────┐
+  │                                                                        │
+  ▼                                                                        │
+CatalogController.SearchProducts / SearchTermAutoComplete                 │
+  │                                                                        │
+  ▼                                                                        │
+IProductService.SearchProductsAsync                                       │
+  │  ◄── custom span: "catalogue.search" (NopTelemetry.CatalogueSource) ──│
+  │        tags: has_keyword, keyword_length, store_id, total_count        │
+  │                                                                        │
+  └─► LINQ-to-DB query ──(auto span: SQL)─────────────────────────────────┤
+        on return:                                                         │
+          nop.catalogue.searches       (Counter, tags: has_results)       │
+          nop.catalogue.search_result_count  (Histogram)                  │
+                                                                           │
+Browser                                                                    │
+  │  GET /<product-slug>                                                   │
+  ▼                                                                        │
+[ASP.NET Core] ──(auto span: HTTP)──────────────────────────────────────► │
+  │                                                                        │
+  ▼                                                                        │
+ProductController.ProductDetails                                          │
+  ├─► IProductService.GetProductByIdAsync ──(auto span: SQL)──────────────┤
+  └─► IPriceCalculationService.GetFinalPriceAsync                         │
+                                                                           │
+All spans ──OTLP──► OTel Collector ──► Jaeger  ◄── Grafana
+                                    └──► Prometheus ◄── Grafana
 ```
 
 ### Quick start
 
-**1. Start the observability stack**
+**Everything runs inside Docker — no .NET SDK needed on the host.**
+
+**1. Build and start all services**
 
 ```bash
-docker compose -f observability/docker-compose.yml up -d
+docker compose up -d --build
 ```
 
-| Service    | URL                      |
-|------------|--------------------------|
-| Grafana    | http://localhost:3000  (admin/admin) |
-| Jaeger UI  | http://localhost:16686   |
-| Prometheus | http://localhost:9090    |
+| Service       | URL                                  |
+|---------------|--------------------------------------|
+| nopCommerce   | http://localhost:80                  |
+| Grafana       | http://localhost:3000  (admin/admin) |
+| Jaeger UI     | http://localhost:16686               |
+| Prometheus    | http://localhost:9090                |
 
-**2. Run nopCommerce**
+> **First run:** visit http://localhost:80 to complete the nopCommerce installation wizard.
+> Use these DB credentials:
+> - Host: `mysql`
+> - Database: `nopcommerce`
+> - User: `root`
+> - Password: `nopCommerce_db_password`
 
-```bash
-# Requires .NET 9 SDK and a running MySQL/Postgres/MSSQL instance.
-# See mysql-docker-compose.yml for a ready-made MySQL setup.
+**2. View the dashboard**
 
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-dotnet run --project src/Presentation/Nop.Web --configuration Release
-```
-
-**3. View the dashboard**
-
-Open Grafana → Dashboards → **nopCommerce — Order Flow**.
+Open Grafana → Dashboards → **nopCommerce — Search & Product View Flow**.
 The dashboard auto-provisions on first start via `observability/grafana/dashboards/`.
 
 **4. Run the load test**
 
 ```bash
 # Install k6: https://grafana.com/docs/k6/latest/set-up/install-k6/
-k6 run load-test/order-flow.js
+k6 run load-test/product.js
 
 # Target a different host or increase VUs:
-k6 run -e BASE_URL=http://localhost:5000 --vus 20 --duration 2m load-test/order-flow.js
+k6 run -e BASE_URL=http://localhost:5000 --vus 20 --duration 2m load-test/product.js
 ```
 
 ### Key files added
 
 | File | Purpose |
 |------|---------|
-| `src/Libraries/Nop.Services/Orders/NopTelemetry.cs` | `ActivitySource` and metric instrument definitions |
-| `src/Libraries/Nop.Services/Orders/OrderTelemetryConsumer.cs` | `IConsumer<OrderPlacedEvent>` — records metrics non-invasively |
+| `src/Libraries/Nop.Services/Catalog/NopTelemetry.cs` | `ActivitySource` and metric instrument definitions |
+| `src/Libraries/Nop.Services/Catalog/ProductService.cs` | Surgical span + metrics in `SearchProductsAsync` |
 | `src/Presentation/Nop.Web/Infrastructure/OpenTelemetryExtensions.cs` | OTel SDK registration + `PiiSanitizingProcessor` |
 | `observability/` | Docker Compose stack, OTel Collector config, Grafana provisioning |
 | `load-test/order-flow.js` | k6 script driving the full checkout flow |
@@ -97,8 +99,9 @@ k6 run -e BASE_URL=http://localhost:5000 --vus 20 --duration 2m load-test/order-
 A `PiiSanitizingProcessor` (registered in `OpenTelemetryExtensions`) removes customer
 email, billing address, cookie, and authorization headers from all spans before they leave
 the process.  The OTel Collector config applies a second filter as a defence-in-depth
-measure.  Only operationally safe tags appear in Jaeger: `order.id`, `order.store_id`,
-`order.success`, and `payment_method` (plugin key, not card data).
+measure.  The raw search keyword is **never** recorded — only `keyword_length` (int) and
+`has_keyword` (bool) appear in spans, so a customer searching for their own name leaves
+no trace in Jaeger.
 
 ---
 

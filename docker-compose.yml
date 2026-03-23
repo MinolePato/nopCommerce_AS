@@ -1,18 +1,101 @@
 services:
-    nopcommerce_web:
-        build: .
-        container_name: nopcommerce
-        ports:
-            - "80:80"
-        depends_on:
-            - nopcommerce_database
-    nopcommerce_database:
-        image: "mcr.microsoft.com/mssql/server:2019-latest"
-        container_name: nopcommerce_mssql_server
-        environment:
-            SA_PASSWORD: "nopCommerce_db_password"
-            ACCEPT_EULA: "Y"
-            MSSQL_PID: "Express"
+
+  nopcommerce:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nopcommerce
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      # Send telemetry to the OTel Collector container
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SERVICE_NAME: nopCommerce
+    volumes:
+      - nopcommerce_app_data:/app/App_Data
+    depends_on:
+      mysql:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  mysql:
+    image: mysql:8.0
+    container_name: nopcommerce_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: nopCommerce_db_password
+      MYSQL_DATABASE: nopcommerce
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost",
+             "-u", "root", "-pnopCommerce_db_password"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    container_name: nop_otel_collector
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC  
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Collector self-metrics
+    depends_on:
+      - jaeger
+
+ 
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: nop_jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+    volumes:
+      - jaeger_data:/tmp
+
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: nop_prometheus
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+
+
+  grafana:
+    image: grafana/grafana:10.4.3
+    container_name: nop_grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./observability/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - jaeger
 
 volumes:
-  nopcommerce_data:            
+  nopcommerce_app_data:
+  mysql_data:
+  jaeger_data:
+  prometheus_data:
+  grafana_data:
