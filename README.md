@@ -1,185 +1,257 @@
-﻿﻿nopCommerce: free and open-source eCommerce solution
-===========
+﻿﻿# Assignment 1 — nopCommerce + OpenTelemetry
+
+**Software Architectures** | Master in Informatics Engineering | Individual Assignment
 
 ---
 
-## Observability Assignment — Search & Product View Flow Instrumentation
+## 1. Architecture Analysis
 
-This fork adds OpenTelemetry tracing and metrics to the **"Customer searches and views a product"** flow
-(Catalogue · Search · Pricing) as part of Assignment 01.
+### Layer Structure
 
-### Architecture diagram — instrumented flow
+![Architecture diagram](docs/images/architecture.png)
+
+nopCommerce follows a strict **five-layer architecture** with compiler-enforced unidirectional dependencies — every arrow points downward, lower layers have zero knowledge of upper ones:
 
 ```
-Browser
-  │  GET /search?q=…  (or POST /search)
-  ▼
-[ASP.NET Core] ──(auto span: HTTP)────────────────────────────────────────┐
-  │                                                                        │
-  ▼                                                                        │
-CatalogController.SearchProducts / SearchTermAutoComplete                 │
-  │                                                                        │
-  ▼                                                                        │
-IProductService.SearchProductsAsync                                       │
-  │  ◄── custom span: "catalogue.search" (NopTelemetry.CatalogueSource) ──│
-  │        tags: has_keyword, keyword_length, store_id, total_count        │
-  │                                                                        │
-  └─► LINQ-to-DB query ──(auto span: SQL)─────────────────────────────────┤
-        on return:                                                         │
-          nop.catalogue.searches       (Counter, tags: has_results)       │
-          nop.catalogue.search_result_count  (Histogram)                  │
-                                                                           │
-Browser                                                                    │
-  │  GET /<product-slug>                                                   │
-  ▼                                                                        │
-[ASP.NET Core] ──(auto span: HTTP)──────────────────────────────────────► │
-  │                                                                        │
-  ▼                                                                        │
-ProductController.ProductDetails                                          │
-  ├─► IProductService.GetProductByIdAsync ──(auto span: SQL)──────────────┤
-  └─► IPriceCalculationService.GetFinalPriceAsync                         │
-                                                                           │
-All spans ──OTLP──► OTel Collector ──► Jaeger  ◄── Grafana
-                                    └──► Prometheus ◄── Grafana
+Nop.Web  (Presentation)
+    └─▶ Nop.Web.Framework  (MVC filters, routing, middleware)
+            └─▶ Nop.Services  (Business logic — one service per domain)
+                    └─▶ Nop.Data  (linq2db repositories, FluentMigrator)
+                            └─▶ Nop.Core  (Domain entities, interfaces — no project deps)
 ```
 
-### Quick start
+All cross-cutting concerns (caching, events, logging) are defined as interfaces in `Nop.Core` and implemented in `Nop.Services` or `Nop.Web.Framework`, keeping the direction clean. The full analysis is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-**Everything runs inside Docker — no .NET SDK needed on the host.**
+### IEventPublisher — Internal Event Mechanism
 
-**1. Build and start all services**
+nopCommerce uses in-process pub/sub for inter-service communication. `EventPublisher.PublishAsync` resolves all `IConsumer<T>` implementations at runtime via Autofac and calls them sequentially. The primary use today is cache invalidation — over 100 `*CacheEventConsumer` files across `Nop.Services`. The event boundary is also a natural instrumentation point: a single consumer can capture metrics for the entire order lifecycle without touching business logic.
+
+### Where Observability Is Easy vs Hard
+
+**Easy:**
+- **Service layer**: all services are constructor-injected interfaces — `ActivitySource.StartActivity()` drops in without modifying business logic
+- **Async throughout**: `Activity` flows via `AsyncLocal`, so a span started at the controller is automatically parent of everything awaited below — no manual context threading
+- **MySqlConnector 2.x**: built-in OTel `ActivitySource` — registered with `.AddSource("MySqlConnector")`, zero extra packages
+
+**Hard:**
+- **`EngineContext.Current` static locator**: appears in ~35 locations including `EventPublisher` itself — services resolved this way cannot be wrapped by DI decorators, breaking the standard OTel instrumentation pattern
+- **SEO product URLs**: product pages use slug-based routes (`/apple-macbook-pro-13-inch`), so `http_route` is always `(missing)` — HTTP auto-metrics cannot identify product page traffic without a custom counter
+- **Silent consumer failures**: `EventPublisher` catches and swallows all consumer exceptions, logging only to the DB — failures are invisible to metrics or traces without modifying the core class
+- **`IStaticCacheManager`**: caching is transparent across the stack — impossible to distinguish cache hits from DB queries without instrumenting the cache manager globally
+
+### Approach
+
+All instrumentation was added as **surgical additions** — no business logic was modified. `NopTelemetry` centralises all `ActivitySource` and `Meter` definitions in `Nop.Services`, using only `System.Diagnostics` primitives (part of the .NET runtime). OTel NuGet packages remain a `Nop.Web` concern only — zero new dependencies in lower layers.
+
+---
+
+## 2. Instrumented Flows
+
+
+
+### Flow — Customer Searches and Views a Product
+
+**Why this flow**: covers Catalogue · Search · Pricing. The search index and pricing pipeline can fail silently — an HTTP 200 with zero results or a wrong price is invisible to error-rate monitors but immediately detectable with the right metrics.
+
+#### Span Hierarchy
+
+```
+GET /search?q=laptop                        ← auto (ASP.NET Core)
+  └── catalog.search                        ← custom (ProductService.SearchProductsAsync)
+        ├── tags: search.has_keyword, search.result_count
+        └── MySqlConnector × N              ← auto (product/category/filter queries)
+
+GET /apple-macbook-pro-13-inch              ← auto (ASP.NET Core)
+  └── catalog.product.view                 ← custom (ProductController.ProductDetails)
+        ├── tags: product.id, product.type, product.is_call_for_price
+        ├── catalog.pricing                 ← custom (PriceCalculationService.GetFinalPriceAsync)
+        │     tags: product.id, pricing.include_discounts, pricing.quantity, pricing.has_discount
+        └── MySqlConnector × N              ← auto (product/picture/attribute/price queries)
+```
+
+**Note on span placement**: `catalog.search` lives in `Nop.Services` (service layer), consistent with `order.place`. `catalog.product.view` lives in the controller — there is no single "view product" method in the service layer; the controller is where the intent is established. `catalog.pricing` lives in `Nop.Services.Catalog`, making it the deepest service-layer span in the product view trace.
+
+#### Custom Metrics
+
+| Metric | Type | Operational justification |
+|--------|------|--------------------------|
+| `nop.catalog.searches` | Counter | Tag `found_results=false` enables alerting on zero-result rate — a spike means catalogue content is missing or the search index is broken, catchable before users start abandoning the site. |
+| `nop.catalog.search.result_count` | Histogram | A collapse of the p50 to 0 across all searches indicates the search pipeline is broken — detectable without waiting for user complaints or HTTP error spikes. |
+| `nop.catalog.product_views` | Counter | Product pages use SEO URLs so `http_route` is always `(missing)` in auto metrics — this is the only reliable way to track product view volume. Tag `product_type` distinguishes simple vs grouped products. |
+
+---
+
+## 3. Privacy Strategy — Defence in Depth
+
+### In Code
+
+Only operational attributes are recorded. Each tag was a deliberate choice:
+
+- **Included**: `order.store_id`, `order.id`, `order.success`, `search.has_keyword`, `search.result_count`, `product.id`, `product.type`, `pricing.include_discounts`, `pricing.has_discount`
+- **Excluded**: customer email, billing/shipping address, customer name, payment card details, search keyword text, cookie values, authorization headers
+
+The raw search keyword is never recorded — only `search.has_keyword` (bool) appears in spans, so a customer searching for their own name leaves no trace in Jaeger.
+
+### SDK Layer — PiiSanitizingProcessor
+
+A custom `BaseProcessor<Activity>` registered in the OTel SDK strips known PII attribute keys from every span before export, regardless of where they were set:
+
+```csharp
+private static readonly HashSet<string> _blocklist = new(StringComparer.OrdinalIgnoreCase)
+{
+    "customer.email", "customer.username", "customer.phone",
+    "billing.name", "billing.address", "billing.city", "billing.postcode",
+    "http.request.header.cookie", "http.request.header.authorization",
+    "http.response.header.set-cookie",
+    "db.statement",   // raw SQL may contain literal values
+};
+```
+
+This catches PII that auto-instrumentation (ASP.NET Core, MySqlConnector) might attach without our knowledge.
+
+### Collector Layer — attributes/drop_pii processor
+
+The OTel Collector applies a second filter before data reaches Jaeger or Prometheus. This matters because the Collector receives spans from all sources — not just our code. Configuration: [`observability/otel-collector-config.yaml`](observability/otel-collector-config.yaml).
+
+**Rejected alternative**: filtering only in code — fragile, because auto-instrumentation operates outside our control.
+
+---
+
+## 4. Grafana Dashboards
+
+
+
+### Catalogue Search Dashboard (`nop-catalog-search`)
+
+| Panel | Query | Purpose |
+|-------|-------|---------|
+| Search volume / min | `rate(nop_nop_catalog_searches_total[1m]) by (found_results)` | Search throughput split by result |
+| Zero-result rate | `rate(found_results="false") / rate(total)` | Search index health |
+| Search result count p50/p90 | `histogram_quantile` on result_count bucket | Result distribution |
+| Product views / min | `rate(nop_nop_catalog_product_views_total[1m]) by (product_type)` | Product page traffic |
+| Product page latency p50/p95 | `histogram_quantile` on HTTP bucket for `(missing)` route | Page load degradation |
+| Traces table | Jaeger search — `catalog.search` / `catalog.product.view` | Last 20 traces per operation |
+
+---
+
+## 5. Load Tests
+
+### Order flow — [`load-test/order-flow.js`](load-test/order-flow.js)
+
+Exercises the complete order placement flow: browse catalogue → view product → add to cart → checkout (billing, shipping, payment, confirm).
+
+```bash
+# Default: ramp to 10 VUs over 30s, hold 90s, ramp down 30s
+k6 run load-test/order-flow.js
+
+# Custom parameters
+k6 run --vus 5 --duration 2m load-test/order-flow.js
+```
+
+| Threshold | Value |
+|-----------|-------|
+| Checkout p95 duration | < 3 000 ms |
+| Order submission error rate | < 1% |
+
+### Search & product view flow — [`load-test/search-flow.js`](load-test/search-flow.js)
+
+Exercises the catalogue search flow: homepage → search with results → view product detail → search with zero results (exercises `found_results=false` metric path) → view second product.
+
+```bash
+# Default: ramp to 10 VUs over 30s, hold 90s, ramp down 30s
+k6 run load-test/search-flow.js
+
+# Override base URL
+k6 run -e BASE_URL=http://localhost:80 load-test/search-flow.js
+```
+
+| Threshold | Value |
+|-----------|-------|
+| Search p95 duration | < 2 000 ms |
+| Product page p95 duration | < 3 000 ms |
+| HTTP error rate | < 1% |
+
+---
+
+## 6. How to Run
+
+### Prerequisites
+
+- Docker and Docker Compose
+- k6 (load test only): [k6.io/docs/getting-started/installation](https://k6.io/docs/getting-started/installation/)
+
+### 1. Start everything
 
 ```bash
 docker compose up -d --build
 ```
 
-| Service       | URL                                  |
-|---------------|--------------------------------------|
-| nopCommerce   | http://localhost:80                  |
-| Grafana       | http://localhost:3000  (admin/admin) |
-| Jaeger UI     | http://localhost:16686               |
-| Prometheus    | http://localhost:9090                |
+This starts: nopCommerce · MySQL · OTel Collector · Jaeger · Prometheus · Grafana
 
-> **First run:** visit http://localhost:80 to complete the nopCommerce installation wizard.
-> Use these DB credentials:
-> - Host: `mysql`
-> - Database: `nopcommerce`
-> - User: `root`
-> - Password: `nopCommerce_db_password`
+### 2. First-time installation
 
-**2. View the dashboard**
+Open `http://localhost:80` and complete the nopCommerce setup wizard:
 
-Open Grafana → Dashboards → **nopCommerce — Search & Product View Flow**.
-The dashboard auto-provisions on first start via `observability/grafana/dashboards/`.
+- **Database type**: MySQL
+- **Server name**: `nopcommerce_mysql`
+- **Database name**: `nopcommerce`
+- **Username / Password**: `root` / `nopCommerce_db_password`
 
-**4. Run the load test**
+After installation, wait ~30 seconds for the app to restart.
+
+### 3. Observability UIs
+
+| Tool | URL | Credentials |
+|------|-----|-------------|
+| nopCommerce | `http://localhost:80` | — |
+| Grafana | `http://localhost:3000` | admin / admin |
+| Jaeger | `http://localhost:16686` | — |
+| Prometheus | `http://localhost:9090` | — |
+
+### 4. Generate telemetry
+
+1. Browse to `http://localhost:80`, search for a product and open its detail page
+2. Add a product to the cart and complete a checkout
+3. In Jaeger: select service `nopCommerce`, operation `catalog.search` or `order.place`
+4. In Grafana: open **nopCommerce — Order Flow** or **nopCommerce — Catalogue Search & Product View**
+
+### 5. Run the load test
 
 ```bash
-# Install k6: https://grafana.com/docs/k6/latest/set-up/install-k6/
-k6 run load-test/product.js
-
-# Target a different host or increase VUs:
-k6 run -e BASE_URL=http://localhost:5000 --vus 20 --duration 2m load-test/product.js
+k6 run load-test/order-flow.js
 ```
 
-### Key files added
+### 6. Stop everything
 
-| File | Purpose |
-|------|---------|
-| `src/Libraries/Nop.Services/Catalog/NopTelemetry.cs` | `ActivitySource` and metric instrument definitions |
-| `src/Libraries/Nop.Services/Catalog/ProductService.cs` | Surgical span + metrics in `SearchProductsAsync` |
-| `src/Presentation/Nop.Web/Infrastructure/OpenTelemetryExtensions.cs` | OTel SDK registration + `PiiSanitizingProcessor` |
-| `observability/` | Docker Compose stack, OTel Collector config, Grafana provisioning |
-| `load-test/order-flow.js` | k6 script driving the full checkout flow |
-| `CRITIQUE.md` | Architectural critique |
-| `ARCHITECTURE.md` | Pre-instrumentation architectural analysis |
+```bash
+docker compose down
+```
 
-### Sensitive data
+To also wipe data volumes (reset to fresh install):
 
-A `PiiSanitizingProcessor` (registered in `OpenTelemetryExtensions`) removes customer
-email, billing address, cookie, and authorization headers from all spans before they leave
-the process.  The OTel Collector config applies a second filter as a defence-in-depth
-measure.  The raw search keyword is **never** recorded — only `keyword_length` (int) and
-`has_keyword` (bool) appear in spans, so a customer searching for their own name leaves
-no trace in Jaeger.
+```bash
+docker compose down -v
+```
 
 ---
 
+## 7. Files Changed
 
-[nopCommerce](https://www.nopcommerce.com/?utm_source=github&utm_medium=content&utm_campaign=homepage) is the best open-source eCommerce platform. nopCommerce is free, and it is the most popular ASP.NET Core shopping cart.
+| File | What changed |
+|------|-------------|
+| `src/Libraries/Nop.Services/Orders/NopTelemetry.cs` | Central definitions: `OrderSource`, `CatalogSource`, all metric instruments |
+| `src/Libraries/Nop.Services/Orders/OrderProcessingService.cs` | `order.place` span + `nop.orders.placed` / `nop.order.item_count` metrics in `PlaceOrderAsync` |
+| `src/Libraries/Nop.Services/Catalog/ProductService.cs` | `catalog.search` span + `nop.catalog.searches` / `nop.catalog.search.result_count` metrics in `SearchProductsAsync` |
+| `src/Libraries/Nop.Services/Catalog/PriceCalculationService.cs` | `catalog.pricing` span in `GetFinalPriceAsync` |
+| `src/Presentation/Nop.Web/Controllers/ProductController.cs` | `catalog.product.view` span + `nop.catalog.product_views` metric in `ProductDetails` |
+| `src/Presentation/Nop.Web/Nop.Web.csproj` | OTel NuGet packages (Extensions.Hosting, Instrumentation.*, Exporter.OpenTelemetryProtocol) |
+| `src/Presentation/Nop.Web/Infrastructure/OpenTelemetryExtensions.cs` | OTel SDK setup: tracing + metrics + OTLP exporter + `PiiSanitizingProcessor` |
+| `src/Presentation/Nop.Web/Program.cs` | `AddNopOpenTelemetry()` registration |
+| `docker-compose.yml` | Added MySQL, OTel Collector, Jaeger, Prometheus, Grafana services |
+| `observability/otel-collector-config.yaml` | Collector pipeline: OTLP receiver → PII drop → Jaeger + Prometheus |
+| `observability/grafana/dashboards/nop-order-flow.json` | Order flow dashboard |
+| `observability/grafana/dashboards/nop-catalog-search.json` | Catalogue search & product view dashboard |
+| `load-test/order-flow.js` | k6 script — full checkout flow |
+| `load-test/search-flow.js` | k6 script — search & product view flow |
 
-![nopCommerce demo](https://www.nopcommerce.com/images/github/responsive_devices_codeplex.png#v1)
-
-### Key features ###
-
-* The product is being developed and supported by the professional team since 2008.
-* nopCommerce has been downloaded more than 3,000,000 times.
-* The active developer community has more than 250,000 members.
-* nopCommerce runs on .NET 9 with an MS SQL 2012 (or higher) backend database.
-* nopCommerce is cross-platform, and you can run it on Windows, Linux, or Mac.
-* nopCommerce supports Docker out of the box, so you can easily run nopCommerce on a Linux machine.
-* nopCommerce supports PostgreSQL and MySQL databases.
-* nopCommerce fully supports web farms. You can read more about it [here](https://docs.nopcommerce.com/en/developer/tutorials/web-farms.html?utm_source=github&utm_medium=referral&utm_campaign=documentation&utm_content=text).  
-* All methods in nopCommerce are async.
-* nopCommerce supports multi-factor authentication out of the box.
-* Start our [online course for developers](https://nopcommerce.com/training?utm_source=github&utm_medium=referral&utm_campaign=course&utm_content=text) and get the practical and technical skills you need to run and customize nopCommerce websites.
-
-![Logo](https://www.nopcommerce.com/images/github/logos.png#v2)
-
-nopCommerce architecture follows well-known software patterns and the best security practices. The source code is fully customizable. Pluggable and clear architecture makes it easy to develop custom functionality and follow any business requirements.
-
-Using the latest Microsoft technologies, nopCommerce provides high performance, stability, and security. nopCommerce is also fully compatible with Azure and web farms.
-
-Our clear and detailed [documentation](https://docs.nopcommerce.com/developer/index.html?utm_source=github&utm_medium=referral&utm_campaign=documentation&utm_content=text) and [online course](https://nopcommerce.com/training?utm_source=github&utm_medium=referral&utm_campaign=course&utm_content=text) for developers will help you start with nopCommerce easily.
-
-
-### The advantages of working with nopCommerce ###
-
-nopCommerce offers powerful [out-of-the-box features](https://www.nopcommerce.com/features?utm_source=github&utm_medium=referral&utm_campaign=features&utm_content=text) for creating an online store of any size and type.
-
-nopCommerce is integrated with all the popular third-party services. You can find thousands of integrations on nopCommerce [Marketplace](https://www.nopcommerce.com/marketplace?utm_source=github&utm_medium=referral&utm_campaign=marketplace&utm_content=text).
-
-The [Web API plugin](https://www.nopcommerce.com/web-api?utm_source=github&utm_medium=referral&utm_campaign=WebAPI&utm_content=text) by the nopCommerce team lets you build integrations with third-party services or mobile applications using REST. The Web API plugin is available with source code and covers all methods of nopCommerce: backend and frontend. You can read more about it [here](https://www.nopcommerce.com/web-api?utm_source=github&utm_medium=referral&utm_campaign=WebAPI&utm_content=text).
-
-Friendly members of the [nopCommerce community](https://www.nopcommerce.com/boards?utm_source=github&utm_medium=referral&utm_campaign=forum&utm_content=text) will always help with advice and share their experiences. nopCommerce core development team provides [professional support](https://www.nopcommerce.com/nopcommerce-premium-support-services?utm_source=github&utm_medium=referral&utm_campaign=premium_support&utm_content=text) within 24 hours.
-
-
-## Store demo ##
-
-Evaluate the functionality and convenience of nopCommerce as a customer and store owner.
-
-Front End | Admin area
-----|------
-[![ScreenShot](https://www.nopcommerce.com/images/github/public-demo.png#v1)](https://demo.nopcommerce.com?utm_source=github&utm_medium=referral&utm_campaign=demo_store&utm_content=button) | [![ScreenShot](https://www.nopcommerce.com/images/github/admin-demo.png#v1)](https://admin-demo.nopcommerce.com/admin?utm_source=github&utm_medium=referral&utm_campaign=demo_store&utm_content=button)
-
-
-### nopCommerce resources ###
-
-nopCommerce official site: [https://www.nopcommerce.com](https://www.nopcommerce.com/?utm_source=github&utm_medium=referral&utm_campaign=homepage&utm_content=links)
-
-* [Demo store](https://www.nopcommerce.com/demo?utm_source=github&utm_medium=referral&utm_campaign=demo_store&utm_content=links)
-* [Download nopCommerce](https://www.nopcommerce.com/download-nopcommerce?utm_source=github&utm_medium=referral&utm_campaign=download_nop&utm_content=links)
-* [Online course for developers](https://nopcommerce.com/training?utm_source=github&utm_medium=referral&utm_campaign=course&utm_content=links)
-* [Feature list](https://www.nopcommerce.com/features?utm_source=github&utm_medium=referral&utm_campaign=features&utm_content=links)
-* [Web API plugin](https://www.nopcommerce.com/web-api?utm_source=github&utm_medium=referral&utm_campaign=WebAPI&utm_content=links)
-* [nopCommerce documentation](https://docs.nopcommerce.com?utm_source=github&utm_medium=referral&utm_campaign=documentation&utm_content=links)
-* [Community forums](https://www.nopcommerce.com/boards?utm_source=github&utm_medium=referral&utm_campaign=forum&utm_content=links)
-* [Premium support services](https://www.nopcommerce.com/nopcommerce-premium-support-services?utm_source=github&utm_medium=referral&utm_campaign=premium_support&utm_content=links)
-* [Certified developer program](https://www.nopcommerce.com/certified-developer-program?utm_source=github&utm_medium=referral&utm_campaign=certified_developer&utm_content=links)
-* [nopCommerce partners](https://www.nopcommerce.com/partners?utm_source=github&utm_medium=referral&utm_campaign=solution_partners&utm_content=links)
-
-nopCommerce YouTube: [The Architecture behind the nopCommerce eCommerce Platform](https://www.youtube.com/watch?v=6gLbizzSA9o&list=PLnL_aDfmRHwtJmzeA7SxrpH3-XDY2ue0a)
-
-
-### Earn with nopCommerce ###
-
-60,000 stores worldwide are powered by nopCommerce, and 10,000 new stores open every year. nopCommerce [solution partners’ directory](https://www.nopcommerce.com/partners?utm_source=github&utm_medium=referral&utm_campaign=solution_partners&utm_content=text_become_partner) gets 80,000+ page views per year from store owners who are looking for a partner to build a store from scratch, migrate from another platform, or improve and customize an existing store.
-
-Become a solution partner of nopCommerce and get new clients – [learn more](https://www.nopcommerce.com/become-partner?utm_source=github&utm_medium=referral&utm_campaign=become-partner&utm_content=learn_more).
-
-Create a new graphical theme or develop a new plugin or integration and sell it on the nopCommerce [Marketplace](https://www.nopcommerce.com/marketplace?utm_source=github&utm_medium=referral&utm_campaign=marketplace&utm_content=text_sell_on_marketplace).
-
-
-### Contribute ###
-
-As a free and open-source project, we are very grateful to everyone who helps us to develop nopCommerce. Please find more details about the options and bonuses for contributors at [contribute page](https://www.nopcommerce.com/contribute?utm_source=github&utm_medium=referral&utm_campaign=contribute&utm_content=text).
+---

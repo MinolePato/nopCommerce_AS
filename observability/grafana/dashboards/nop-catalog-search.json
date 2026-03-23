@@ -1,0 +1,233 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "datasource", "id": "jaeger",     "name": "Jaeger",     "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "description": "nopCommerce — Catalogue Search & Product View Flow. Tracks search volume, zero-result rate, result count distribution, and product page activity.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+
+    {
+      "id": 1,
+      "title": "Search volume / min",
+      "description": "Rate of search queries split by whether results were found. A spike in found_results=false means the catalogue is missing content or the search index is broken.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
+      "targets": [
+        {
+          "expr": "sum(rate(nop_nop_catalog_searches_total[1m])) by (found_results)",
+          "legendFormat": "found_results={{found_results}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 2,
+      "title": "Zero-result search rate",
+      "description": "Fraction of searches returning 0 products. Above 30% signals catalogue gaps or a broken search index — actionable before users start abandoning the site.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 0.10 },
+              { "color": "red",    "value": 0.30 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "expr": "sum(rate(nop_nop_catalog_searches_total{found_results=\"false\"}[5m])) / sum(rate(nop_nop_catalog_searches_total[5m]))",
+          "legendFormat": "zero-result rate",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 3,
+      "title": "Total searches (window)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["sum"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "expr": "increase(nop_nop_catalog_searches_total[$__range])",
+          "legendFormat": "searches",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 4,
+      "title": "Search result count — p50 / p90",
+      "description": "Products returned per search query. A collapse to 0 across all searches indicates the catalogue or search index is broken — detectable without waiting for user complaints.",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(nop_nop_catalog_search_result_count_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.90, sum(rate(nop_nop_catalog_search_result_count_bucket[5m])) by (le))",
+          "legendFormat": "p90",
+          "refId": "B"
+        }
+      ]
+    },
+
+    {
+      "id": 5,
+      "title": "Product page views / min",
+      "description": "Rate of product detail page requests. A sudden drop signals catalogue availability issues.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
+      "targets": [
+        {
+          "expr": "sum(rate(nop_nop_catalog_product_views_total[1m])) by (product_type)",
+          "legendFormat": "{{product_type}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 6,
+      "title": "Product page latency — p50 / p95",
+      "description": "HTTP response time for product detail pages. A rising p95 signals slow pricing/picture queries or DB pressure.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(nop_http_server_request_duration_seconds_bucket{http_route=\"(missing)\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(nop_http_server_request_duration_seconds_bucket{http_route=\"(missing)\"}[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ]
+    },
+
+    {
+      "id": 7,
+      "title": "Recent catalog.search traces",
+      "description": "Last 20 search traces. Click a row to open the full trace in Jaeger.",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
+      "datasource": { "uid": "jaeger", "type": "jaeger" },
+      "fieldConfig": {
+        "defaults": { "custom": { "displayMode": "auto" } },
+        "overrides": []
+      },
+      "options": { "footer": { "show": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "search",
+          "service": "nopCommerce",
+          "operation": "catalog.search",
+          "limit": 20
+        }
+      ]
+    },
+
+    {
+      "id": 8,
+      "title": "Recent catalog.product.view traces",
+      "description": "Last 20 product view traces. Click a row to open the full trace in Jaeger.",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 26 },
+      "datasource": { "uid": "jaeger", "type": "jaeger" },
+      "fieldConfig": {
+        "defaults": { "custom": { "displayMode": "auto" } },
+        "overrides": []
+      },
+      "options": { "footer": { "show": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "search",
+          "service": "nopCommerce",
+          "operation": "catalog.product.view",
+          "limit": 20
+        }
+      ]
+    }
+
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["nopcommerce", "catalog", "search", "opentelemetry"],
+  "templating": { "list": [] },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "nopCommerce — Catalogue Search & Product View",
+  "uid": "nop-catalog-search",
+  "version": 1
+}
