@@ -7,6 +7,7 @@ using Nop.Core.Domain.Stores;
 using Nop.Services.Customers;
 using Nop.Services.Directory;
 using Nop.Services.Discounts;
+using Nop.Services.Orders;
 
 namespace Nop.Services.Catalog;
 
@@ -342,6 +343,11 @@ public partial class PriceCalculationService : IPriceCalculationService
     {
         ArgumentNullException.ThrowIfNull(product);
 
+        using var activity = NopTelemetry.CatalogSource.StartActivity("catalog.pricing");
+        activity?.SetTag("product.id", product.Id);
+        activity?.SetTag("pricing.include_discounts", includeDiscounts);
+        activity?.SetTag("pricing.quantity", quantity);
+
         var cacheKey = _staticCacheManager.PrepareKeyForDefaultCache(NopCatalogDefaults.ProductPriceCacheKey,
             product,
             overriddenProductPrice,
@@ -409,6 +415,7 @@ public partial class PriceCalculationService : IPriceCalculationService
             return (priceWithoutDiscount, price, appliedDiscountAmount, discounts);
         });
 
+        activity?.SetTag("pricing.has_discount", discountAmount > decimal.Zero);
         return (rezPriceWithoutDiscount, rezPrice, discountAmount, appliedDiscounts);
     }
 

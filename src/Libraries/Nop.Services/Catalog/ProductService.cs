@@ -13,6 +13,7 @@ using Nop.Data;
 using Nop.Services.Customers;
 using Nop.Services.Localization;
 using Nop.Services.Messages;
+using Nop.Services.Orders;
 using Nop.Services.Security;
 using Nop.Services.Shipping.Date;
 using Nop.Services.Stores;
@@ -829,6 +830,9 @@ public partial class ProductService : IProductService
         bool showHidden = false,
         bool? overridePublished = null)
     {
+        using var activity = NopTelemetry.CatalogSource.StartActivity("catalog.search");
+        activity?.SetTag("search.has_keyword", !string.IsNullOrWhiteSpace(keywords));
+
         //some databases don't support int.MaxValue
         if (pageSize == int.MaxValue)
             pageSize = int.MaxValue - 1;
@@ -1121,6 +1125,8 @@ public partial class ProductService : IProductService
             }
         }
 
+        IPagedList<Product> result;
+
         if (providerResults.Any() && orderBy == ProductSortingEnum.Position && !showHidden)
         {
             var sortedProducts = from p in productsQuery
@@ -1128,12 +1134,23 @@ public partial class ProductService : IProductService
                                  from os in orderSeq.DefaultIfEmpty()
                                  orderby os == null ? int.MaxValue : os.ind
                                  select p;
-                                 
 
-            return await sortedProducts.ToPagedListAsync(pageIndex, pageSize);
+            result = await sortedProducts.ToPagedListAsync(pageIndex, pageSize);
+        }
+        else
+        {
+            result = await productsQuery.OrderBy(_localizedPropertyRepository, await _workContext.GetWorkingLanguageAsync(), orderBy).ToPagedListAsync(pageIndex, pageSize);
         }
 
-        return await productsQuery.OrderBy(_localizedPropertyRepository, await _workContext.GetWorkingLanguageAsync(), orderBy).ToPagedListAsync(pageIndex, pageSize);
+        activity?.SetTag("search.result_count", result.TotalCount);
+        if (!string.IsNullOrWhiteSpace(keywords))
+        {
+            NopTelemetry.SearchesExecuted.Add(1,
+                new KeyValuePair<string, object?>("found_results", result.TotalCount > 0));
+            NopTelemetry.SearchResultCount.Record(result.TotalCount);
+        }
+
+        return result;
     }
 
     /// <summary>

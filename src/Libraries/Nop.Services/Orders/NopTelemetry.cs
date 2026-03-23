@@ -5,7 +5,7 @@ namespace Nop.Services.Orders;
 
 /// <summary>
 /// Central place for all OpenTelemetry ActivitySource and Meter definitions
-/// used by the order-flow instrumentation.
+/// used by the order-flow and catalogue/search instrumentation.
 ///
 /// Using built-in System.Diagnostics primitives means Nop.Services needs
 /// zero new NuGet dependencies — the OTel SDK lives only in Nop.Web.
@@ -25,6 +25,13 @@ public static class NopTelemetry
     /// </summary>
     public static readonly ActivitySource OrderSource =
         new(ServiceName + ".orders", "1.0.0");
+
+    /// <summary>
+    /// ActivitySource for the catalogue search and product-view flow.
+    /// Registered with the OTel SDK in <c>OpenTelemetryExtensions.AddNopOpenTelemetry</c>.
+    /// </summary>
+    public static readonly ActivitySource CatalogSource =
+        new(ServiceName + ".catalog", "1.0.0");
 
     // ---------------------------------------------------------------
     // Metrics
@@ -59,4 +66,46 @@ public static class NopTelemetry
             name: "nop.order.item_count",
             unit: "{item}",
             description: "Number of line items per placed order");
+
+    // ---------------------------------------------------------------
+    // Catalogue / Search flow metrics
+    // ---------------------------------------------------------------
+
+    /// <summary>
+    /// Counts every product detail page view.
+    ///
+    /// Operational value: product pages use SEO-friendly URLs so there is no
+    /// stable http_route label to filter on — this counter is the only reliable
+    /// way to track product view volume and detect catalogue availability drops.
+    /// </summary>
+    public static readonly Counter<long> ProductViews =
+        _meter.CreateCounter<long>(
+            name: "nop.catalog.product_views",
+            unit: "{view}",
+            description: "Number of product detail page views");
+
+    /// <summary>
+    /// Counts every search executed on the public store.
+    ///
+    /// Operational value: tag <c>found_results=false</c> lets you alert on
+    /// zero-result rate — a spike means missing catalogue content or a broken
+    /// search index, catchable before users start abandoning the site.
+    /// </summary>
+    public static readonly Counter<long> SearchesExecuted =
+        _meter.CreateCounter<long>(
+            name: "nop.catalog.searches",
+            unit: "{search}",
+            description: "Number of searches executed on the public store");
+
+    /// <summary>
+    /// Records how many products each search query returns.
+    ///
+    /// Operational value: if the p50 suddenly collapses to 0 the catalogue
+    /// or search index is broken — detectable without waiting for user complaints.
+    /// </summary>
+    public static readonly Histogram<int> SearchResultCount =
+        _meter.CreateHistogram<int>(
+            name: "nop.catalog.search.result_count",
+            unit: "{product}",
+            description: "Number of products returned per search query");
 }

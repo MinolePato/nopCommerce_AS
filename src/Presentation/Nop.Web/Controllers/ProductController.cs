@@ -194,6 +194,14 @@ public partial class ProductController : BasePublicController
         await _customerActivityService.InsertActivityAsync("PublicStore.ViewProduct",
             string.Format(await _localizationService.GetResourceAsync("ActivityLog.PublicStore.ViewProduct"), product.Name), product);
 
+        // custom span + metric — safe attributes only (no product name to avoid potential PII)
+        using var activity = NopTelemetry.CatalogSource.StartActivity("catalog.product.view");
+        activity?.SetTag("product.id", product.Id);
+        activity?.SetTag("product.type", product.ProductType.ToString());
+        activity?.SetTag("product.is_call_for_price", product.CallForPrice);
+        NopTelemetry.ProductViews.Add(1,
+            new KeyValuePair<string, object?>("product_type", product.ProductType.ToString()));
+
         //model
         var model = await _productModelFactory.PrepareProductDetailsModelAsync(product, updatecartitem, false);
         //template

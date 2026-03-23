@@ -64,7 +64,7 @@
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
       "targets": [
         {
-          "expr": "sum(rate(http_server_request_duration_seconds_count{http_route=~\"/checkout.*\",http_response_status_code=~\"5..\"}[1m])) / sum(rate(http_server_request_duration_seconds_count{http_route=~\"/checkout.*\"}[1m]))",
+          "expr": "sum(rate(nop_http_server_request_duration_seconds_count{http_route=~\"/checkout.*\",http_response_status_code=~\"5..\"}[1m])) / sum(rate(nop_http_server_request_duration_seconds_count{http_route=~\"/checkout.*\"}[1m]))",
           "legendFormat": "5xx rate",
           "refId": "A"
         }
@@ -85,17 +85,17 @@
       "options": { "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{span_name=\"order.place\"}[5m])) by (le)) / 1000",
+          "expr": "histogram_quantile(0.50, sum(rate(nop_http_server_request_duration_seconds_bucket{http_route=~\"/checkout.*\"}[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{span_name=\"order.place\"}[5m])) by (le)) / 1000",
+          "expr": "histogram_quantile(0.95, sum(rate(nop_http_server_request_duration_seconds_bucket{http_route=~\"/checkout.*\"}[5m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(traces_spanmetrics_duration_milliseconds_bucket{span_name=\"order.place\"}[5m])) by (le)) / 1000",
+          "expr": "histogram_quantile(0.99, sum(rate(nop_http_server_request_duration_seconds_bucket{http_route=~\"/checkout.*\"}[5m])) by (le))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -148,7 +148,7 @@
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
       "targets": [
         {
-          "expr": "sum(http_server_active_requests{http_route=~\"/checkout.*\"})",
+          "expr": "sum(nop_http_server_active_requests{http_route=~\"/checkout.*\"})",
           "legendFormat": "active",
           "refId": "A"
         }

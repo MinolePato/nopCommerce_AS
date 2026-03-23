@@ -8,6 +8,7 @@ using Nop.Core.Http;
 using Nop.Core.Rss;
 using Nop.Services.Catalog;
 using Nop.Services.Common;
+using Nop.Services.Orders;
 using Nop.Services.FilterLevels;
 using Nop.Services.Helpers;
 using Nop.Services.Localization;

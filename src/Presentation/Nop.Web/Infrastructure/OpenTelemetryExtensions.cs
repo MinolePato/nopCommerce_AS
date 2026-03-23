@@ -41,7 +41,10 @@ public static class OpenTelemetryExtensions
                 })
                 .AddHttpClientInstrumentation()
                 .AddSqlClientInstrumentation()
+                // MySqlConnector 2.x has built-in OTel support — no extra package needed
+                .AddSource("MySqlConnector")
                 .AddSource(NopTelemetry.OrderSource.Name)
+                .AddSource(NopTelemetry.CatalogSource.Name)
                 // Drop span attributes that contain PII before export
                 .AddProcessor(new PiiSanitizingProcessor())
                 .AddOtlpExporter(opts => opts.Endpoint = new Uri(otlpEndpoint)))
