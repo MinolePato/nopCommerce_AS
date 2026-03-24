@@ -108,4 +108,17 @@ public static class NopTelemetry
             name: "nop.catalog.search.result_count",
             unit: "{product}",
             description: "Number of products returned per search query");
+
+    /// <summary>
+    /// Records which result page the user requested (0 = first page).
+    ///
+    /// Operational value: if the p90 rises above 1 users are regularly paginating
+    /// past the first page of results — a leading indicator of poor search
+    /// relevance, detectable before users start abandoning searches.
+    /// </summary>
+    public static readonly Histogram<int> SearchPageDepth =
+        _meter.CreateHistogram<int>(
+            name: "nop.catalog.search.page_depth",
+            unit: "{page}",
+            description: "Page index requested per keyword search — 0 = first page");
 }

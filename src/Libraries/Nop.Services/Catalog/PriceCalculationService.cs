@@ -345,6 +345,7 @@ public partial class PriceCalculationService : IPriceCalculationService
 
         using var activity = NopTelemetry.CatalogSource.StartActivity("catalog.pricing");
         activity?.SetTag("product.id", product.Id);
+        activity?.SetTag("product.name", product.Name);
         activity?.SetTag("pricing.include_discounts", includeDiscounts);
         activity?.SetTag("pricing.quantity", quantity);
 

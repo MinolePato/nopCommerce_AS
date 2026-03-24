@@ -58,26 +58,36 @@ All instrumentation was added as **surgical additions** — no business logic wa
 ```
 GET /search?q=laptop                        ← auto (ASP.NET Core)
   └── catalog.search                        ← custom (ProductService.SearchProductsAsync)
-        ├── tags: search.has_keyword, search.result_count
+        ├── tags: search.has_keyword, search.result_count,
+        │         search.page_index, search.category_filter,
+        │         search.category_name,    ← category name when user filters by category
+        │         search.price_filter, search.sort_order
         └── MySqlConnector × N              ← auto (product/category/filter queries)
 
-GET /apple-macbook-pro-13-inch              ← auto (ASP.NET Core)
-  └── catalog.product.view                 ← custom (ProductController.ProductDetails)
-        ├── tags: product.id, product.type, product.is_call_for_price
+GET /apple-macbook-pro                     ← auto (ASP.NET Core)
+  └── catalog.product.view                 ← custom (ProductService.RecordProductViewAsync)
+        ├── tags: product.id, product.name, product.slug,
+        │         product.category, product.type,
+        │         product.is_call_for_price, product.in_stock
         ├── catalog.pricing                 ← custom (PriceCalculationService.GetFinalPriceAsync)
-        │     tags: product.id, pricing.include_discounts, pricing.quantity, pricing.has_discount
+        │     tags: product.id, product.name, pricing.include_discounts,
+        │           pricing.quantity, pricing.has_discount
         └── MySqlConnector × N              ← auto (product/picture/attribute/price queries)
 ```
 
-**Note on span placement**: `catalog.search` lives in `Nop.Services` (service layer), consistent with `order.place`. `catalog.product.view` lives in the controller — there is no single "view product" method in the service layer; the controller is where the intent is established. `catalog.pricing` lives in `Nop.Services.Catalog`, making it the deepest service-layer span in the product view trace.
+**Note on span placement**: All spans live in `Nop.Services` — zero instrumentation in controllers. `catalog.product.view` is emitted by `ProductService.RecordProductViewAsync`, called from the controller with a single line. `catalog.search` is emitted by `ProductService.SearchProductsAsync`. `catalog.pricing` is emitted by `PriceCalculationService.GetFinalPriceAsync`. The controller is completely decoupled from observability concerns.
+
+**Note on filtering**: `catalog.search` spans and metrics are only emitted for public-facing keyword searches (`showHidden=false`). Internal calls from admin panel, related products, and cross-sells are excluded — without this guard the counters would count every internal catalogue query, not just user searches.
 
 #### Custom Metrics
 
-| Metric | Type | Operational justification |
-|--------|------|--------------------------|
-| `nop.catalog.searches` | Counter | Tag `found_results=false` enables alerting on zero-result rate — a spike means catalogue content is missing or the search index is broken, catchable before users start abandoning the site. |
-| `nop.catalog.search.result_count` | Histogram | A collapse of the p50 to 0 across all searches indicates the search pipeline is broken — detectable without waiting for user complaints or HTTP error spikes. |
-| `nop.catalog.product_views` | Counter | Product pages use SEO URLs so `http_route` is always `(missing)` in auto metrics — this is the only reliable way to track product view volume. Tag `product_type` distinguishes simple vs grouped products. |
+| Metric | Type | Tags | Operational justification | Observable in Grafana (run `k6 run load-test/search-flow.js`) |
+|--------|------|------|--------------------------|--------------------------------------------------------------|
+| `nop.catalog.searches` | Counter | `found_results` | Tag `found_results=false` enables alerting on zero-result rate — a spike means catalogue content is missing or the search index is broken, catchable before users start abandoning the site. | **Phase 3 (4–6 min):** 60% of searches use no-result keywords. Open **Searches per interval** — the `found_results=false` bar dominates. **Zero-result search rate** stat turns red (>30%). |
+| `nop.catalog.search.page_depth` | Histogram | — | Page index requested per keyword search (0 = first page). p90 rising above 1 means users regularly paginate past the first page — a leading indicator of poor search relevance before abandonment rates rise. | Browse to `/search?q=computer` in the store and click page 2, 3. Open **Search pagination depth p50/p90** — p90 rises above 0 immediately. With the load test running, the panel shows the distribution of page indices across all VUs. |
+| `nop.catalog.product_views` + `product_category` | Counter | `product_category` | Product pages use SEO URLs so `http_route` is always `""` in auto metrics — there is no built-in way to count product page views by category. This tag fills that gap: a rising bar for a category with poor stock means customers are browsing products they cannot buy. Category name is resolved at instrumentation time via a join on `ProductCategory → Category`. | **Phase 2 (2–4 min):** each VU picks one category and browses only within it. Open **Product views by category** — distinct coloured bars appear for Electronics, Shoes, Books, Computers, etc., showing traffic split across all 8 categories simultaneously. |
+| `nop.catalog.product_views` + `in_stock` | Counter | `in_stock` | Out-of-stock views are direct lost-revenue events invisible to HTTP error monitors (the page still returns 200). `in_stock=false` makes them alertable: a sustained count signals products that need restocking or unpublishing. | **Phase 3 (4–6 min):** every iteration visits two out-of-stock products (Bose SoundLink, Jordan 1 Retro, Canon R5, etc.). Open **Product views per interval** — the `in_stock=false` bar (red) spikes. In Jaeger, the **Out-of-stock trace list** shows the exact product names and slugs. |
+| `nop.catalog.product_views` + `is_call_for_price` | Counter | `is_call_for_price` | Call-for-price products have no public price and never appear in revenue metrics. `is_call_for_price=true` surfaces demand for these premium items — useful for the sales team to prioritise follow-up on high-value customer interest. | **Phase 4 (6–8 min):** 60% of product views target call-for-price items (Rolex Submariner, Alienware Aurora, Bang & Olufsen H95, etc.). Open **"Call for price" product views** — the orange bar spikes. In Jaeger, the **Call-for-price trace list** shows exactly which premium products were viewed and when. |
 
 ---
 
@@ -87,10 +97,12 @@ GET /apple-macbook-pro-13-inch              ← auto (ASP.NET Core)
 
 Only operational attributes are recorded. Each tag was a deliberate choice:
 
-- **Included**: `order.store_id`, `order.id`, `order.success`, `search.has_keyword`, `search.result_count`, `product.id`, `product.type`, `pricing.include_discounts`, `pricing.has_discount`
-- **Excluded**: customer email, billing/shipping address, customer name, payment card details, search keyword text, cookie values, authorization headers
+- **Included**: `order.store_id`, `order.id`, `order.success`, `search.has_keyword`, `search.result_count`, `search.page_index`, `search.category_filter`, `search.category_name`, `search.price_filter`, `search.sort_order`, `product.id`, `product.name`, `product.slug`, `product.category`, `product.type`, `product.in_stock`, `product.is_call_for_price`, `pricing.include_discounts`, `pricing.has_discount`
+- **Excluded**: customer email, billing/shipping address, customer name, payment card details, **search keyword text**, cookie values, authorization headers
 
-The raw search keyword is never recorded — only `search.has_keyword` (bool) appears in spans, so a customer searching for their own name leaves no trace in Jaeger.
+Product names (`product.name`) are public catalogue data — recording them in spans is standard observability practice and enables identifying exactly which product was viewed or priced in Jaeger without any additional lookup.
+
+The raw search keyword is deliberately excluded: unlike a product name, a user can type anything into the search box (their own name, email, medical condition, etc.). Only `search.has_keyword` (bool) is recorded, so a customer searching for their own name leaves no trace in Jaeger.
 
 ### SDK Layer — PiiSanitizingProcessor
 
@@ -123,42 +135,38 @@ The OTel Collector applies a second filter before data reaches Jaeger or Prometh
 
 ### Catalogue Search Dashboard (`nop-catalog-search`)
 
-| Panel | Query | Purpose |
-|-------|-------|---------|
-| Search volume / min | `rate(nop_nop_catalog_searches_total[1m]) by (found_results)` | Search throughput split by result |
-| Zero-result rate | `rate(found_results="false") / rate(total)` | Search index health |
-| Search result count p50/p90 | `histogram_quantile` on result_count bucket | Result distribution |
-| Product views / min | `rate(nop_nop_catalog_product_views_total[1m]) by (product_type)` | Product page traffic |
-| Product page latency p50/p95 | `histogram_quantile` on HTTP bucket for `(missing)` route | Page load degradation |
-| Traces table | Jaeger search — `catalog.search` / `catalog.product.view` | Last 20 traces per operation |
+| Panel | Purpose |
+|-------|---------|
+| Search volume / min | Search throughput split by `found_results` — immediate signal if zero-result rate spikes |
+| Zero-result rate | Fraction of searches returning no products — above 30% triggers red threshold |
+| Total searches (window) | Single number: total searches in the selected time range |
+| Product page latency p50/p95 | HTTP latency for SEO-URL product pages (filtered by `http_route=""` — empty because slug-based URLs match no route template) |
+| Product views / min | Product page traffic split by stock status (`in_stock=true/false`) |
+| Search pagination depth p50/p90 | Page index per search — p90 > 1 indicates poor search relevance |
+| Product views by category | Traffic volume per catalogue category — reveals which categories drive the most (and least) traffic |
+| "Call for price" views / min | Demand for premium products where price is hidden |
+| Traces — catalog.search | Last 20 traces containing a `catalog.search` span (filtered by `search.has_keyword=true` tag) |
+| Traces — catalog.product.view | Last 20 traces containing a `catalog.product.view` span |
+
+> **Note on trace panels**: Jaeger always displays the root span (the HTTP GET) as the row label. The `catalog.search` and `catalog.product.view` spans are visible inside each trace after clicking through.
 
 ---
 
 ## 5. Load Tests
 
-### Order flow — [`load-test/order-flow.js`](load-test/order-flow.js)
-
-Exercises the complete order placement flow: browse catalogue → view product → add to cart → checkout (billing, shipping, payment, confirm).
-
-```bash
-# Default: ramp to 10 VUs over 30s, hold 90s, ramp down 30s
-k6 run load-test/order-flow.js
-
-# Custom parameters
-k6 run --vus 5 --duration 2m load-test/order-flow.js
-```
-
-| Threshold | Value |
-|-----------|-------|
-| Checkout p95 duration | < 3 000 ms |
-| Order submission error rate | < 1% |
-
 ### Search & product view flow — [`load-test/search-flow.js`](load-test/search-flow.js)
 
-Exercises the catalogue search flow: homepage → search with results → view product detail → search with zero results (exercises `found_results=false` metric path) → view second product.
+Five sequential phases, each producing a distinct traffic composition visible in the Grafana dashboards:
+
+| Phase | Duration | VUs | Composition | Expected dashboard signal |
+|-------|----------|-----|-------------|--------------------------|
+| 1 — Normal browsing | 0–1 min | 8 | 90% found, 5% out-of-stock, 5% call-for-price | Green baseline |
+| 2 — Category explorer | 1–2 min | 12 | Browses within one category: in-stock → out-of-stock | Per-category bars appear |
+| 3 — Catalogue stress | 2–3 min | 15 | 60% zero-result + heavy out-of-stock across all categories | Zero-result rate turns red, out-of-stock spikes |
+| 4 — Premium demand | 3–4 min | 12 | 60% call-for-price views spread across categories | Call-for-price panel spikes |
+| 5 — Recovery | 4–5 min | 8 | Balanced mix: 15% zero-result, 15% out-of-stock, 15% call-for-price | Metrics return to baseline |
 
 ```bash
-# Default: ramp to 10 VUs over 30s, hold 90s, ramp down 30s
 k6 run load-test/search-flow.js
 
 # Override base URL
@@ -239,19 +247,17 @@ docker compose down -v
 
 | File | What changed |
 |------|-------------|
-| `src/Libraries/Nop.Services/Orders/NopTelemetry.cs` | Central definitions: `OrderSource`, `CatalogSource`, all metric instruments |
+| `src/Libraries/Nop.Services/Orders/NopTelemetry.cs` | Central definitions: `OrderSource`, `CatalogSource`, all metric instruments (`nop.orders.placed`, `nop.order.item_count`, `nop.catalog.searches`, `nop.catalog.search.result_count`, `nop.catalog.product_views`) |
 | `src/Libraries/Nop.Services/Orders/OrderProcessingService.cs` | `order.place` span + `nop.orders.placed` / `nop.order.item_count` metrics in `PlaceOrderAsync` |
-| `src/Libraries/Nop.Services/Catalog/ProductService.cs` | `catalog.search` span + `nop.catalog.searches` / `nop.catalog.search.result_count` metrics in `SearchProductsAsync` |
+| `src/Libraries/Nop.Services/Catalog/ProductService.cs` | `catalog.search` span + metrics in `SearchProductsAsync` (guarded to public searches only); `catalog.product.view` span + `nop.catalog.product_views` metric in `RecordProductViewAsync` |
 | `src/Libraries/Nop.Services/Catalog/PriceCalculationService.cs` | `catalog.pricing` span in `GetFinalPriceAsync` |
-| `src/Presentation/Nop.Web/Controllers/ProductController.cs` | `catalog.product.view` span + `nop.catalog.product_views` metric in `ProductDetails` |
-| `src/Presentation/Nop.Web/Nop.Web.csproj` | OTel NuGet packages (Extensions.Hosting, Instrumentation.*, Exporter.OpenTelemetryProtocol) |
-| `src/Presentation/Nop.Web/Infrastructure/OpenTelemetryExtensions.cs` | OTel SDK setup: tracing + metrics + OTLP exporter + `PiiSanitizingProcessor` |
-| `src/Presentation/Nop.Web/Program.cs` | `AddNopOpenTelemetry()` registration |
+| `src/Libraries/Nop.Services/Catalog/IProductService.cs` | Added `RecordProductViewAsync(Product)` to the interface |
 | `docker-compose.yml` | Added MySQL, OTel Collector, Jaeger, Prometheus, Grafana services |
 | `observability/otel-collector-config.yaml` | Collector pipeline: OTLP receiver → PII drop → Jaeger + Prometheus |
 | `observability/grafana/dashboards/nop-order-flow.json` | Order flow dashboard |
-| `observability/grafana/dashboards/nop-catalog-search.json` | Catalogue search & product view dashboard |
+| `observability/grafana/dashboards/nop-catalog-search.json` | Catalogue search & product view dashboard — 12 panels: search volume, zero-result rate, result count p50/p90, product views by stock status, page latency, out-of-stock timeseries, call-for-price timeseries, and four Jaeger trace tables |
+| `observability/seed-demo-data.sql` | Seeds 24 products across 8 categories (Electronics, Computers, Camera, Cell phones, Books, Clothing, Shoes, Accessories) — each category has one in-stock, one out-of-stock, and one call-for-price product, plus sets existing demo products to out-of-stock / call-for-price to exercise all metric paths |
 | `load-test/order-flow.js` | k6 script — full checkout flow |
-| `load-test/search-flow.js` | k6 script — search & product view flow |
+| `load-test/search-flow.js` | k6 script — search & product view flow; covers 8 in-stock keyword groups, 8 out-of-stock keyword groups, and 9 call-for-price slugs drawn from all seeded categories |
 
 ---

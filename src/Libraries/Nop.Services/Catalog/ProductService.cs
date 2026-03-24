@@ -6,6 +6,7 @@ using Nop.Core.Domain.Customers;
 using Nop.Core.Domain.Discounts;
 using Nop.Core.Domain.Localization;
 using Nop.Core.Domain.Orders;
+using Nop.Core.Domain.Seo;
 using Nop.Core.Domain.Shipping;
 using Nop.Core.Domain.Stores;
 using Nop.Core.Infrastructure;
@@ -56,6 +57,7 @@ public partial class ProductService : IProductService
     protected readonly IRepository<Shipment> _shipmentRepository;
     protected readonly IRepository<StockQuantityHistory> _stockQuantityHistoryRepository;
     protected readonly IRepository<TierPrice> _tierPriceRepository;
+    protected readonly IRepository<UrlRecord> _urlRecordRepository;
     protected readonly ISearchPluginManager _searchPluginManager;
     protected readonly IStaticCacheManager _staticCacheManager;
     protected readonly IStoreMappingService _storeMappingService;
@@ -96,6 +98,7 @@ public partial class ProductService : IProductService
         IRepository<Shipment> shipmentRepository,
         IRepository<StockQuantityHistory> stockQuantityHistoryRepository,
         IRepository<TierPrice> tierPriceRepository,
+        IRepository<UrlRecord> urlRecordRepository,
         ISearchPluginManager searchPluginManager,
         IStaticCacheManager staticCacheManager,
         IVendorService vendorService,
@@ -131,6 +134,7 @@ public partial class ProductService : IProductService
         _shipmentRepository = shipmentRepository;
         _stockQuantityHistoryRepository = stockQuantityHistoryRepository;
         _tierPriceRepository = tierPriceRepository;
+        _urlRecordRepository = urlRecordRepository;
         _searchPluginManager = searchPluginManager;
         _staticCacheManager = staticCacheManager;
         _storeMappingService = storeMappingService;
@@ -830,8 +834,22 @@ public partial class ProductService : IProductService
         bool showHidden = false,
         bool? overridePublished = null)
     {
-        using var activity = NopTelemetry.CatalogSource.StartActivity("catalog.search");
+        // Only create a public-facing trace — admin calls (showHidden=true) and internal
+        // price-range probes (pageSize=1) are noise
+        using var activity = (showHidden || pageSize == 1) ? null : NopTelemetry.CatalogSource.StartActivity("catalog.search");
         activity?.SetTag("search.has_keyword", !string.IsNullOrWhiteSpace(keywords));
+        activity?.SetTag("search.page_index", pageIndex);
+        activity?.SetTag("search.category_filter", categoryIds?.Count > 0);
+        activity?.SetTag("search.price_filter", priceMin.HasValue || priceMax.HasValue);
+        activity?.SetTag("search.sort_order", orderBy.ToString());
+        if (activity != null && categoryIds?.Count > 0)
+        {
+            var categoryNames = await _categoryRepository.Table
+                .Where(c => categoryIds.Contains(c.Id))
+                .Select(c => c.Name)
+                .ToListAsync();
+            activity.SetTag("search.category_name", string.Join(", ", categoryNames));
+        }
 
         //some databases don't support int.MaxValue
         if (pageSize == int.MaxValue)
@@ -1143,11 +1161,17 @@ public partial class ProductService : IProductService
         }
 
         activity?.SetTag("search.result_count", result.TotalCount);
-        if (!string.IsNullOrWhiteSpace(keywords))
+        // Only count public-facing keyword searches.
+        // showHidden=true → admin/internal call.
+        // pageSize=1 → internal price-range probe (CatalogModelFactory calls SearchProductsAsync
+        //              with pageSize=1 up to 3 times per search page render to determine the
+        //              min/max price filter bounds — same keyword, not a real user search).
+        if (!string.IsNullOrWhiteSpace(keywords) && !showHidden && pageSize > 1)
         {
             NopTelemetry.SearchesExecuted.Add(1,
                 new KeyValuePair<string, object?>("found_results", result.TotalCount > 0));
             NopTelemetry.SearchResultCount.Record(result.TotalCount);
+            NopTelemetry.SearchPageDepth.Record(pageIndex);
         }
 
         return result;
@@ -2531,6 +2555,45 @@ public partial class ProductService : IProductService
     }
 
     #endregion
+
+    #endregion
+
+    #region Telemetry
+
+    /// <inheritdoc/>
+    public virtual async Task RecordProductViewAsync(Product product)
+    {
+        ArgumentNullException.ThrowIfNull(product);
+
+        var inStock = product.ManageInventoryMethod == ManageInventoryMethod.DontManageStock
+            || product.StockQuantity > 0;
+
+        var categoryNames = await (
+            from pc in _productCategoryRepository.Table
+            join c in _categoryRepository.Table on pc.CategoryId equals c.Id
+            where pc.ProductId == product.Id
+            select c.Name
+        ).ToListAsync();
+
+        var slug = await _urlRecordRepository.Table
+            .Where(u => u.EntityId == product.Id && u.EntityName == "Product" && u.IsActive)
+            .Select(u => u.Slug)
+            .FirstOrDefaultAsync();
+
+        using var activity = NopTelemetry.CatalogSource.StartActivity("catalog.product.view");
+        activity?.SetTag("product.id", product.Id);
+        activity?.SetTag("product.name", product.Name);
+        activity?.SetTag("product.slug", slug ?? string.Empty);
+        activity?.SetTag("product.category", string.Join(", ", categoryNames));
+        activity?.SetTag("product.type", product.ProductType.ToString());
+        activity?.SetTag("product.is_call_for_price", product.CallForPrice);
+        activity?.SetTag("product.in_stock", inStock);
+        var category = categoryNames.Count > 0 ? string.Join(", ", categoryNames) : "none";
+        NopTelemetry.ProductViews.Add(1,
+            new KeyValuePair<string, object?>("product_category", category),
+            new KeyValuePair<string, object?>("in_stock", inStock),
+            new KeyValuePair<string, object?>("is_call_for_price", product.CallForPrice));
+    }
 
     #endregion
 }

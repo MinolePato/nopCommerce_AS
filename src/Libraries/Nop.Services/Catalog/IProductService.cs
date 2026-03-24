@@ -853,4 +853,15 @@ public partial interface IProductService
     Task DeleteDiscountProductMappingAsync(DiscountProductMapping discountProductMapping);
 
     #endregion
+
+    #region Telemetry
+
+    /// <summary>
+    /// Records a product detail page view for observability purposes.
+    /// Emits a catalog.product.view span and increments the nop.catalog.product_views counter.
+    /// </summary>
+    /// <param name="product">The product being viewed</param>
+    Task RecordProductViewAsync(Product product);
+
+    #endregion
 }

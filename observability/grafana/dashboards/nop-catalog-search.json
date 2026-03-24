@@ -15,8 +15,8 @@
 
     {
       "id": 1,
-      "title": "Search volume / min",
-      "description": "Rate of search queries split by whether results were found. A spike in found_results=false means the catalogue is missing content or the search index is broken.",
+      "title": "Searches per interval",
+      "description": "Number of searches per display interval split by whether results were found. A spike in found_results=false means the catalogue is missing content or the search index is broken.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "datasource": { "uid": "prometheus", "type": "prometheus" },
@@ -24,14 +24,14 @@
         "defaults": {
           "color": { "mode": "palette-classic" },
           "unit": "short",
-          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "drawStyle": "bars" }
         },
         "overrides": []
       },
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
       "targets": [
         {
-          "expr": "sum(rate(nop_nop_catalog_searches_total[1m])) by (found_results)",
+          "expr": "sum(increase(nop_nop_catalog_searches_total[$__rate_interval])) by (found_results)",
           "legendFormat": "found_results={{found_results}}",
           "refId": "A"
         }
@@ -71,7 +71,7 @@
 
     {
       "id": 3,
-      "title": "Total searches (window)",
+      "title": "Total searches (last 5 min)",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
       "datasource": { "uid": "prometheus", "type": "prometheus" },
@@ -83,10 +83,10 @@
         },
         "overrides": []
       },
-      "options": { "reduceOptions": { "calcs": ["sum"] }, "colorMode": "background" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
       "targets": [
         {
-          "expr": "increase(nop_nop_catalog_searches_total[$__range])",
+          "expr": "sum(increase(nop_nop_catalog_searches_total[5m]))",
           "legendFormat": "searches",
           "refId": "A"
         }
@@ -95,10 +95,10 @@
 
     {
       "id": 4,
-      "title": "Search result count — p50 / p90",
-      "description": "Products returned per search query. A collapse to 0 across all searches indicates the catalogue or search index is broken — detectable without waiting for user complaints.",
+      "title": "Search pagination depth — p50 / p90",
+      "description": "Result page index requested per keyword search (0 = first page). p90 rising above 1 means users regularly paginate past the first page — a leading indicator of poor search relevance before abandonment rates rise.",
       "type": "timeseries",
-      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 4 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "datasource": { "uid": "prometheus", "type": "prometheus" },
       "fieldConfig": {
         "defaults": {
@@ -110,12 +110,12 @@
       "options": { "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(nop_nop_catalog_search_result_count_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(nop_nop_catalog_search_page_depth_bucket[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.90, sum(rate(nop_nop_catalog_search_result_count_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.90, sum(rate(nop_nop_catalog_search_page_depth_bucket[5m])) by (le))",
           "legendFormat": "p90",
           "refId": "B"
         }
@@ -124,8 +124,8 @@
 
     {
       "id": 5,
-      "title": "Product page views / min",
-      "description": "Rate of product detail page requests. A sudden drop signals catalogue availability issues.",
+      "title": "Product views per interval — by stock status",
+      "description": "Product page views split by stock availability. A rising in_stock=false bar means customers are repeatedly hitting unavailable products — lost revenue that requires restocking or unpublishing.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "datasource": { "uid": "prometheus", "type": "prometheus" },
@@ -133,15 +133,24 @@
         "defaults": {
           "color": { "mode": "palette-classic" },
           "unit": "short",
-          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "drawStyle": "bars" }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "in_stock=false" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "in_stock=true" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          }
+        ]
       },
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
       "targets": [
         {
-          "expr": "sum(rate(nop_nop_catalog_product_views_total[1m])) by (product_type)",
-          "legendFormat": "{{product_type}}",
+          "expr": "sum(increase(nop_nop_catalog_product_views_total[$__rate_interval])) by (in_stock)",
+          "legendFormat": "in_stock={{in_stock}}",
           "refId": "A"
         }
       ]
@@ -152,7 +161,7 @@
       "title": "Product page latency — p50 / p95",
       "description": "HTTP response time for product detail pages. A rising p95 signals slow pricing/picture queries or DB pressure.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 4 },
       "datasource": { "uid": "prometheus", "type": "prometheus" },
       "fieldConfig": {
         "defaults": { "unit": "s", "custom": { "lineWidth": 2 } },
@@ -161,12 +170,12 @@
       "options": { "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(nop_http_server_request_duration_seconds_bucket{http_route=\"(missing)\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(nop_http_server_request_duration_seconds_bucket{http_route=\"\"}[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(nop_http_server_request_duration_seconds_bucket{http_route=\"(missing)\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(nop_http_server_request_duration_seconds_bucket{http_route=\"\"}[5m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         }
@@ -174,11 +183,61 @@
     },
 
     {
+      "id": 9,
+      "title": "Product views by category",
+      "description": "Product page views split by product category per interval. Shows which categories drive the most traffic — rising bars for a category with high out-of-stock products signals lost revenue.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "drawStyle": "bars" }
+        },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
+      "targets": [
+        {
+          "expr": "sum(increase(nop_nop_catalog_product_views_total[$__rate_interval])) by (product_category)",
+          "legendFormat": "{{product_category}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 10,
+      "title": "\"Call for price\" product views",
+      "description": "Views of premium products where price is hidden (call for price) per interval. A rising trend indicates demand for high-value items — useful for sales team prioritisation.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "orange", "mode": "fixed" },
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "drawStyle": "bars" }
+        },
+        "overrides": []
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
+      "targets": [
+        {
+          "expr": "sum(increase(nop_nop_catalog_product_views_total{is_call_for_price=\"true\"}[$__rate_interval]))",
+          "legendFormat": "call-for-price views",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
       "id": 7,
-      "title": "Recent catalog.search traces",
-      "description": "Last 20 search traces. Click a row to open the full trace in Jaeger.",
+      "title": "Recent catalog.search traces (click row → Jaeger)",
+      "description": "Traces filtered to only those containing a catalog.search span. Each row shows the parent HTTP request (GET /search) — this is a Jaeger display constraint; the catalog.search span and its tags are visible inside each trace.",
       "type": "table",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
       "datasource": { "uid": "jaeger", "type": "jaeger" },
       "fieldConfig": {
         "defaults": { "custom": { "displayMode": "auto" } },
@@ -191,6 +250,7 @@
           "queryType": "search",
           "service": "nopCommerce",
           "operation": "catalog.search",
+          "tags": "search.has_keyword=true",
           "limit": 20
         }
       ]
@@ -198,10 +258,10 @@
 
     {
       "id": 8,
-      "title": "Recent catalog.product.view traces",
-      "description": "Last 20 product view traces. Click a row to open the full trace in Jaeger.",
+      "title": "Recent catalog.product.view traces (click row → Jaeger)",
+      "description": "Traces containing a catalog.product.view span. Each row shows the parent HTTP request (GET /{slug}) — click to open the full trace in Jaeger where catalog.product.view and catalog.pricing are visible.",
       "type": "table",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 26 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
       "datasource": { "uid": "jaeger", "type": "jaeger" },
       "fieldConfig": {
         "defaults": { "custom": { "displayMode": "auto" } },
@@ -217,6 +277,54 @@
           "limit": 20
         }
       ]
+    },
+
+    {
+      "id": 12,
+      "title": "Out-of-stock product views — trace list",
+      "description": "Traces where a product with no stock was viewed (product.in_stock=false). Each row links to the full trace — open it to see product.name, product.category, and all pricing spans. Use this to identify which specific products customers are hitting that they cannot buy.",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 44 },
+      "datasource": { "uid": "jaeger", "type": "jaeger" },
+      "fieldConfig": {
+        "defaults": { "custom": { "displayMode": "auto" } },
+        "overrides": []
+      },
+      "options": { "footer": { "show": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "search",
+          "service": "nopCommerce",
+          "operation": "catalog.product.view",
+          "tags": "product.in_stock=false",
+          "limit": 20
+        }
+      ]
+    },
+
+    {
+      "id": 13,
+      "title": "Call-for-price product views — trace list",
+      "description": "Traces where a call-for-price product was viewed (product.is_call_for_price=true). Each row links to the full trace — open it to see product.id. Use this to identify which premium products are generating demand.",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 44 },
+      "datasource": { "uid": "jaeger", "type": "jaeger" },
+      "fieldConfig": {
+        "defaults": { "custom": { "displayMode": "auto" } },
+        "overrides": []
+      },
+      "options": { "footer": { "show": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "search",
+          "service": "nopCommerce",
+          "operation": "catalog.product.view",
+          "tags": "product.is_call_for_price=true",
+          "limit": 20
+        }
+      ]
     }
 
   ],
@@ -229,5 +337,5 @@
   "timezone": "browser",
   "title": "nopCommerce — Catalogue Search & Product View",
   "uid": "nop-catalog-search",
-  "version": 1
+  "version": 2
 }
