@@ -47,7 +47,7 @@ All instrumentation was added as **surgical additions**, no business logic was m
 
 ## 2. Instrumented Flows
 
-
+![Observability pipeline](docs/images/observability.png)
 
 ### Flow — Customer Searches and Views a Product
 
@@ -129,9 +129,11 @@ The OTel Collector applies a second filter before data reaches Jaeger or Prometh
 
 ## 4. Grafana Dashboards
 
-
-
 ### Catalogue Search Dashboard (`nop-catalog-search`)
+
+![Grafana — Product views and metrics](docs/images/grafana-product-views.png)
+
+![Grafana — Trace tables](docs/images/grafana-product-traces.png)
 
 | Panel | Purpose |
 |-------|---------|
@@ -147,6 +149,16 @@ The OTel Collector applies a second filter before data reaches Jaeger or Prometh
 | Traces, catalog.product.view | Last 20 traces containing a `catalog.product.view` span |
 
 > **Note on trace panels**: Jaeger always displays the root span (the HTTP GET) as the row label. The `catalog.search` and `catalog.product.view` spans are visible inside each trace after clicking through.
+
+### Jaeger — Trace Detail
+
+![Jaeger — trace list](docs/images/jaeger-general.png)
+
+![Jaeger — trace detail](docs/images/jaeger-especific.png)
+
+### Prometheus — Metrics Explorer
+
+![Prometheus — nop metrics](docs/images/prometheus-general.png)
 
 ---
 
