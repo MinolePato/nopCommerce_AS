@@ -1,4 +1,5 @@
 ﻿using System.Data.SqlTypes;
+using System.Diagnostics;
 using Nop.Core;
 using Nop.Core.Caching;
 using Nop.Core.Domain.Catalog;
@@ -1168,10 +1169,18 @@ public partial class ProductService : IProductService
         //              min/max price filter bounds — same keyword, not a real user search).
         if (!string.IsNullOrWhiteSpace(keywords) && !showHidden && pageSize > 1)
         {
+            var foundResults = result.TotalCount > 0;
             NopTelemetry.SearchesExecuted.Add(1,
-                new KeyValuePair<string, object?>("found_results", result.TotalCount > 0));
+                new KeyValuePair<string, object?>("found_results", foundResults));
             NopTelemetry.SearchResultCount.Record(result.TotalCount);
             NopTelemetry.SearchPageDepth.Record(pageIndex);
+
+            // Only record the keyword when the search returned zero results.
+            // This surfaces catalogue gaps (what customers want but cannot find)
+            // without capturing keywords from successful searches, where the text
+            // has no operational value and may contain personal data.
+            if (!foundResults)
+                Activity.Current?.SetTag("search.keyword", keywords);
         }
 
         return result;

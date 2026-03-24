@@ -1,34 +1,3 @@
-/**
- * k6 load test — nopCommerce Catalogue Search & Product View
- * Multi-phase test producing distinct observability signals in each phase.
- *
- * Phase 1 — Normal browsing      (0–2 min,  5 VUs)
- *   Healthy traffic: 90% searches return results, rare out-of-stock or
- *   call-for-price encounters. Establishes the "green" baseline on dashboards.
- *
- * Phase 2 — Category explorer    (2–4 min,  8 VUs)
- *   VU picks a random category and browses entirely within it: keyword search,
- *   in-stock product view, then the out-of-stock product in the same category.
- *   Shows per-category inventory gaps on the product_category panel.
- *
- * Phase 3 — Catalogue stress     (4–6 min, 12 VUs)
- *   60% zero-result searches + heavy out-of-stock views across every category.
- *   Simulates a broken search index or a large inventory shortage.
- *   Dashboard zero-result rate turns red; out-of-stock bars spike.
- *
- * Phase 4 — Premium demand spike (6–8 min, 10 VUs)
- *   40% of product views are call-for-price items spread across all categories.
- *   Simulates a marketing campaign targeting luxury products.
- *   Call-for-price panel spikes; per-category view panel shows premium mix.
- *
- * Phase 5 — Recovery             (8–10 min, 6 VUs)
- *   Balanced traffic returning to healthy patterns after the stress phase.
- *   Verifies latency normalises and zero-result rate recovers.
- *
- * Usage:
- *   k6 run load-test/search-flow.js
- *   k6 run -e BASE_URL=http://localhost:80 load-test/search-flow.js
- */
 
 import http from "k6/http";
 import { check, sleep, group } from "k6";
@@ -157,7 +126,7 @@ export const options = {
       startTime: "0s",
       stages: [
         { duration: "10s", target: 8 },
-        { duration: "40s", target: 8 },
+        { duration: "40s", target: 50 },
         { duration: "10s", target: 0 },
       ],
       exec: "normalBrowsing",
@@ -312,15 +281,6 @@ export function categoryExplorer() {
 
   sleep(1);
 }
-
-// ---------------------------------------------------------------------------
-// Phase 3 — Catalogue stress
-//   60% of searches return zero results. Every iteration also visits two
-//   out-of-stock products across different categories. Simulates a broken
-//   search index or a major inventory shortage across the catalogue.
-//   Expected dashboard signals: zero-result rate > 60% (red), heavy
-//   out-of-stock bar on the product views panel.
-// ---------------------------------------------------------------------------
 export function catalogStress() {
   group("p3_search_high_zero_result", () => {
     const r = Math.random();
@@ -352,14 +312,7 @@ export function catalogStress() {
   sleep(0.5);
 }
 
-// ---------------------------------------------------------------------------
-// Phase 4 — Premium demand spike
-//   Each VU picks a category and views its call-for-price product, then
-//   views a second call-for-price product from another category (60%) or an
-//   available product for comparison (40%). 15% of searches return no results.
-//   Expected signals: call-for-price panel spikes; category panel shows
-//   premium categories (computers, accessories, shoes) dominating.
-// ---------------------------------------------------------------------------
+
 export function premiumDemand() {
   const cat = pick(CATEGORIES);
 
@@ -396,12 +349,7 @@ export function premiumDemand() {
   sleep(0.5);
 }
 
-// ---------------------------------------------------------------------------
-// Phase 5 — Recovery
-//   Mixed traffic back to healthy patterns: 15% zero-result, 15% out-of-stock
-//   views, 15% call-for-price, 70% normal in-stock browsing.
-//   Verifies latency and error rate return to baseline after the stress phase.
-// ---------------------------------------------------------------------------
+
 export function recovery() {
   group("p5_homepage", () => {
     check(http.get(`${BASE_URL}/`, { headers: hdrs() }), { "200": r => r.status === 200 });
