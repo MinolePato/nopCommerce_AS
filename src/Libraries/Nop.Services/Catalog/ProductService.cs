@@ -1173,7 +1173,6 @@ public partial class ProductService : IProductService
             NopTelemetry.SearchesExecuted.Add(1,
                 new KeyValuePair<string, object?>("found_results", foundResults));
             NopTelemetry.SearchResultCount.Record(result.TotalCount);
-            NopTelemetry.SearchPageDepth.Record(pageIndex);
 
             // Only record the keyword when the search returned zero results.
             // This surfaces catalogue gaps (what customers want but cannot find)

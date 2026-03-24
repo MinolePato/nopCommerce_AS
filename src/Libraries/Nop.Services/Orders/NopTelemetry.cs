@@ -110,15 +110,15 @@ public static class NopTelemetry
             description: "Number of products returned per search query");
 
     /// <summary>
-    /// Records which result page the user requested (0 = first page).
+    /// Counts every public product pricing calculation.
     ///
-    /// Operational value: if the p90 rises above 1 users are regularly paginating
-    /// past the first page of results — a leading indicator of poor search
-    /// relevance, detectable before users start abandoning searches.
+    /// Operational value: tag <c>has_discount=true</c> shows what fraction of
+    /// product views are discounted — a spike means a discount campaign is driving
+    /// traffic; a sudden drop signals a discount rule was accidentally deactivated.
     /// </summary>
-    public static readonly Histogram<int> SearchPageDepth =
-        _meter.CreateHistogram<int>(
-            name: "nop.catalog.search.page_depth",
-            unit: "{page}",
-            description: "Page index requested per keyword search — 0 = first page");
+    public static readonly Counter<long> PricingRequests =
+        _meter.CreateCounter<long>(
+            name: "nop.catalog.pricing_requests",
+            unit: "{request}",
+            description: "Number of product pricing calculations, tagged by whether a discount was applied");
 }

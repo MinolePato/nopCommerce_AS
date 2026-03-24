@@ -95,29 +95,34 @@
 
     {
       "id": 4,
-      "title": "Search pagination depth — p50 / p90",
-      "description": "Result page index requested per keyword search (0 = first page). p90 rising above 1 means users regularly paginate past the first page — a leading indicator of poor search relevance before abandonment rates rise.",
+      "title": "Discounted product views / min",
+      "description": "Product pricing requests split by whether a discount was applied. A rising has_discount=true bar confirms an active discount campaign is driving traffic; a sudden drop signals a discount rule was accidentally deactivated.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "datasource": { "uid": "prometheus", "type": "prometheus" },
       "fieldConfig": {
         "defaults": {
+          "color": { "mode": "palette-classic" },
           "unit": "short",
-          "custom": { "lineWidth": 2 }
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "drawStyle": "bars" }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "has_discount=true" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "has_discount=false" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+          }
+        ]
       },
-      "options": { "tooltip": { "mode": "multi" } },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(nop_nop_catalog_search_page_depth_bucket[5m])) by (le))",
-          "legendFormat": "p50",
+          "expr": "sum(increase(nop_nop_catalog_pricing_requests_total[$__rate_interval])) by (has_discount)",
+          "legendFormat": "has_discount={{has_discount}}",
           "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.90, sum(rate(nop_nop_catalog_search_page_depth_bucket[5m])) by (le))",
-          "legendFormat": "p90",
-          "refId": "B"
         }
       ]
     },

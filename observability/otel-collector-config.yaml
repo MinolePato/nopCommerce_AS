@@ -28,6 +28,20 @@ processors:
         action: delete
       - key: http.request.header.authorization
         action: delete
+      - key: db.connection_string
+        action: delete
+      - key: db.user
+        action: delete
+      - key: db.name
+        action: delete
+      - key: server.address
+        action: delete
+      - key: server.port
+        action: delete
+      - key: net.peer.name
+        action: delete
+      - key: net.peer.port
+        action: delete
 
 exporters:
   # Traces → Jaeger via OTLP (jaeger exporter was removed in collector v0.86+)

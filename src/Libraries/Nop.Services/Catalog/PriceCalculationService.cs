@@ -416,7 +416,10 @@ public partial class PriceCalculationService : IPriceCalculationService
             return (priceWithoutDiscount, price, appliedDiscountAmount, discounts);
         });
 
-        activity?.SetTag("pricing.has_discount", discountAmount > decimal.Zero);
+        var hasDiscount = discountAmount > decimal.Zero;
+        activity?.SetTag("pricing.has_discount", hasDiscount);
+        NopTelemetry.PricingRequests.Add(1,
+            new KeyValuePair<string, object?>("has_discount", hasDiscount));
         return (rezPriceWithoutDiscount, rezPrice, discountAmount, appliedDiscounts);
     }
 

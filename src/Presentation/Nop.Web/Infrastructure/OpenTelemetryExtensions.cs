@@ -83,7 +83,14 @@ internal sealed class PiiSanitizingProcessor : BaseProcessor<Activity>
         "http.request.header.cookie",
         "http.request.header.authorization",
         "http.response.header.set-cookie",
-        "db.statement",   
+        "db.statement",           // raw SQL may contain literal values
+        "db.connection_string",   // contains host, user, password
+        "db.user",
+        "db.name",
+        "server.address",         // MySqlConnector: DB host
+        "server.port",            // MySqlConnector: DB port
+        "net.peer.name",          // older OTel semconv alias
+        "net.peer.port",
     };
 
     public override void OnEnd(Activity activity)
