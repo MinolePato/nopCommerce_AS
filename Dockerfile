@@ -1,17 +1,17 @@
-# create the build instance 
+# create the build instance
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
 
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 
-WORKDIR /src                                                                    
-COPY ./src ./
+WORKDIR /src
+COPY ./Nop_src/src ./
 
-# build solution   
+# build solution
 RUN dotnet build NopCommerce.sln --no-incremental -c Release
 
 # publish project
-WORKDIR /src/Presentation/Nop.Web   
+WORKDIR /src/Presentation/Nop.Web
 RUN dotnet publish Nop.Web.csproj -c Release -o /app/published
 
 WORKDIR /app/published

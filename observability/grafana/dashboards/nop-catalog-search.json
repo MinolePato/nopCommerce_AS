@@ -26,7 +26,16 @@
           "unit": "short",
           "custom": { "lineWidth": 2, "fillOpacity": 10, "drawStyle": "bars" }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "found_results=true" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "found_results=false" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          }
+        ]
       },
       "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list" } },
       "targets": [
